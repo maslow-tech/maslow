@@ -1,0 +1,17 @@
+#!/bin/sh
+# Pre-commit dispatcher. Runs every executable in pre-commit.d/ in filename
+# order and exits 0 if that directory is absent (so branches without hooks are a
+# silent no-op).
+#
+# NOTE: core.hooksPath REPLACES .git/hooks/ — it does not layer over it. While
+# this repo's hooksPath is .githooks, any personal or company-wide hook you had
+# in .git/hooks/ is disabled. Prevention only, not enforcement: `git commit
+# --no-verify` bypasses this entirely, and CI (`pnpm format:check`) remains the
+# real gate.
+set -e
+dir="$(dirname "$0")/pre-commit.d"
+[ -d "$dir" ] || exit 0
+for h in "$dir"/*; do
+  [ -x "$h" ] || continue
+  "$h" || exit $?
+done

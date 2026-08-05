@@ -1,0 +1,329 @@
+name: release
+
+# Build → CI keyless-sign (cosign/OIDC) → SLSA provenance → digest-pin → publish
+# → publish GitHub Release with a machine-readable release.json feed entry.
+# Policy-gated: only tags on main after required checks. No long-lived signing
+# secret sits in CI — signing is keyless via the GitHub OIDC token; the box's
+# VERIFY key is baked into the image, and boxes pull BY DIGEST.
+
+on:
+  push:
+    tags: ["v*"]
+  # Exercise the verify-gate against a SHA with ZERO publish (build-sign-publish
+  # is push-only) — the fleet-safe way to test the gate in Actions.
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "commit SHA to run the release gate against (defaults to the ref)"
+        required: false
+
+permissions:
+  contents: write # publish the GitHub Release + upload the deploy bundle
+  packages: write
+  id-token: write # keyless cosign / SLSA provenance via OIDC
+  actions: read # release-gate reads workflow-run/job conclusions for the SHA
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Refuse to build-sign-publish unless the tagged commit is ON main AND the
+  # target of a FULLY-green required-CI run (the release gate). Pure-read (gh api
+  # GETs), fail-closed. The decision logic is unit-tested in apps/updater
+  # (release-gate.ts / release-gate.test.ts); this job just runs the CLI.
+  verify-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @brain/updater build
+      - name: release gate — on-main + fully-green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Untrusted-ish input passed via env (never interpolated into the
+          # command); the CLI validates it against the compare/runs API.
+          GATE_SHA: ${{ github.event.inputs.sha || github.sha }}
+        run: node apps/updater/dist/release-gate-cli.js "$GATE_SHA"
+
+  build-sign-publish:
+    needs: verify-gate
+    # workflow_dispatch runs ONLY the gate (zero publish) — the fleet-safe test path.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}/box
+      UPDATER_IMAGE: ghcr.io/${{ github.repository }}/updater
+      POSTGRES_IMAGE: ghcr.io/${{ github.repository }}/postgres
+      BUNDLE_IMAGE: ghcr.io/${{ github.repository }}/bundle
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # This job builds FOUR multi-arch images (box — with baked retrieval
+      # models — plus updater, postgres and the bundle) on one ~14GB
+      # runner. When the disk fills, the runner DIES mid-`docker build`: no
+      # failing step, no log, every later step left `conclusion: null`. That is
+      # indistinguishable from a lost runner, so it gets misread as flake and
+      # re-run forever. Reclaim the preinstalled
+      # toolchains this job never touches, and PRINT the free space either way so
+      # the next failure is diagnosable instead of silent.
+      - name: Free runner disk (and report it)
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          echo "after:"; df -h / | tail -1
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      # NOTE: lint/typecheck/unit are NOT re-run here — the verify-gate job above
+      # already REFUSED to reach this job unless the tagged SHA had a fully-green
+      # required ci.yml run (which runs exactly those). Re-running them would be a
+      # redundant, weaker check (this SHA, not the gated one).
+
+      # The baked retrieval models (retrieval stack v2) come from this repo's
+      # `models-1` release mirror — HuggingFace 403s unauthenticated fetches
+      # from datacenter IPs, so the Dockerfile never talks to HF; it COPYs
+      # deploy/models/ and verifies every file against deploy/models.sha256.
+      - name: Fetch baked retrieval models
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/fetch-models.sh
+
+      # arm64 emulation so the box runs on Graviton/t4g (aarch64) hosts, not
+      # just amd64 — a production box may run t4g.xlarge. QEMU is enough: the
+      # images are TS/Node + stock postgres, no heavy native compilation.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build + push with SLSA provenance attestation, capture the DIGEST.
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max # SLSA provenance (repo/commit/workflow)
+          sbom: true
+          tags: ${{ env.IMAGE }}:${{ env.REF_NAME }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+
+      # Run BOTH arch images and preload the retrieval models before anything
+      # is signed: a model that can't load degrades the whole fleet to
+      # lexical-only search silently (graceful for one box, a regression for
+      # everyone). A release shipped exactly this on arm64 — sharp's per-arch
+      # binaries were missing from the amd64-built tree — and no build step
+      # could see it because nothing ever RAN the arm64 image.
+      - name: Smoke both arches — retrieval models must load
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          for P in linux/amd64 linux/arm64; do
+            # the classic image store can't hold two platform variants under
+            # one digest ref — drop the previous platform's pull first
+            docker image rm -f "${IMAGE}@${DIGEST}" 2>/dev/null || true
+            docker run --rm --platform "$P" "${IMAGE}@${DIGEST}" node -e "
+              Promise.all([import('/app/dist/local-embedder.js'), import('/app/dist/local-reranker.js')])
+                .then(async ([a, b]) => {
+                  const e = new a.LocalEmbedder(); await e.preload();
+                  const r = new b.LocalReranker(); await r.preload();
+                  console.log('models ok on', process.arch);
+                })
+                .catch((err) => { console.error(String(err)); process.exit(1); })"
+          done
+
+      # Client-path smoke — a REAL headless-Chromium login → save-branding →
+      # read-back against the freshly-built box image (deploy/smoke-client-path.sh).
+      # Runs PRE-SIGN: a red result fails the job before cosign, so an image with
+      # a broken SPA/CSP/CSRF-cookie can never be signed and reach a user's box.
+      # amd64 only. `[skip-client-smoke]` in the ANNOTATED TAG message bypasses
+      # ONLY this browser smoke (Layer 1's CSRF unit test still gates every
+      # release) — the git-recorded, explicit hotfix escape hatch.
+      - name: Client-path smoke — real browser login→save→read (amd64)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          MSG=$(git for-each-ref --format='%(contents)' "refs/tags/${REF_NAME}" || true)
+          if printf '%s' "$MSG" | grep -q '\[skip-client-smoke\]'; then
+            echo "::notice title=client-smoke::[skip-client-smoke] in the tag message — skipping the browser smoke (Layer 1 still gated)"
+            exit 0
+          fi
+          npx playwright install --with-deps chromium
+          bash deploy/smoke-client-path.sh
+
+      - uses: sigstore/cosign-installer@v3
+      # Keyless signature over the DIGEST (not the tag) — no key in CI.
+      - run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      # The updater image: built + signed the same way, but NOT
+      # recorded in the release feed — it is independently versioned and boxes pin it
+      # via BRAIN_UPDATER_IMAGE (installer/runbook), not the release channel.
+      - id: build_updater
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile.updater
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.UPDATER_IMAGE }}:${{ env.REF_NAME }}
+      - run: cosign sign --yes "${UPDATER_IMAGE}@${DIGEST}"
+        env:
+          DIGEST: ${{ steps.build_updater.outputs.digest }}
+
+      # The postgres image (whole-box bundle updates): versioned + signed per
+      # release like box/updater, so the bundle can pin it and the updater can
+      # verify + converge it.
+      - id: build_postgres
+        uses: docker/build-push-action@v7
+        with:
+          context: deploy/postgres
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.POSTGRES_IMAGE }}:${{ env.REF_NAME }}
+      - run: cosign sign --yes "${POSTGRES_IMAGE}@${DIGEST}"
+        env:
+          DIGEST: ${{ steps.build_postgres.outputs.digest }}
+
+      # ---- the release BUNDLE (whole-box bundle updates) --------------------
+      # One signed OCI artifact describing the ENTIRE box for this release:
+      # bundle.json (every component image by digest + the postgres major) and
+      # the SAME deploy tarball the installer uses — install and update share
+      # one artifact by construction, so they can never drift. The updater
+      # pulls ghcr.io/…/bundle:<version>, cosign-verifies the digest, checks
+      # bundle.json's version + app digest against the feed's release record,
+      # and reconciles the box to it. Built with jq from env (no interpolation).
+      #
+      # Ordering: everything fallible (registry pushes, cosign) happens BEFORE
+      # `gh release create`, so a failure never leaves a published release that
+      # installers can fetch but the fleet can never converge to.
+      - name: Assemble the release bundle context
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          APP_DIGEST: ${{ steps.build.outputs.digest }}
+          UPDATER_DIGEST: ${{ steps.build_updater.outputs.digest }}
+          POSTGRES_DIGEST: ${{ steps.build_postgres.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Caddy's digest comes from the IN-REPO compose pin (a bump is a
+          # reviewable PR event) — no mutable-tag registry lookup at release
+          # time, no Docker Hub anonymous-rate-limit flake. Anchored to the
+          # BRAIN_CADDY_IMAGE fallback so a stray "caddy:X" in a comment can
+          # never win, and required to be exactly one occurrence.
+          test "$(grep -cE 'BRAIN_CADDY_IMAGE:-' deploy/docker-compose.yml)" = "1"
+          CADDY_PIN=$(grep -oE 'BRAIN_CADDY_IMAGE:-[^}]+' deploy/docker-compose.yml)
+          CADDY_DIGEST="sha256:${CADDY_PIN##*@sha256:}"
+          # The postgres major the bundle's image carries — the updater refuses
+          # cross-major swaps (on-disk format change → runbook, never auto).
+          docker pull -q "${POSTGRES_IMAGE}@${POSTGRES_DIGEST}"
+          PG_MAJOR=$(docker inspect "${POSTGRES_IMAGE}@${POSTGRES_DIGEST}" \
+            --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^PG_MAJOR=' | cut -d= -f2)
+          # Never sign a malformed bundle: every digest must be shape-valid and
+          # the major numeric — a silent `null` from a parse must die here.
+          SHAPE='^sha256:[0-9a-f]{64}$'
+          for d in "$APP_DIGEST" "$UPDATER_DIGEST" "$POSTGRES_DIGEST" "$CADDY_DIGEST"; do
+            echo "$d" | grep -qE "$SHAPE" || { echo "malformed digest: $d"; exit 1; }
+          done
+          echo "$PG_MAJOR" | grep -qE '^[0-9]+$' || { echo "bad PG_MAJOR: $PG_MAJOR"; exit 1; }
+          BUNDLE="brain-deploy-${REF_NAME}.tar.gz"
+          # The deploy tarball is CONFIGS (compose, caddy, install) — never the
+          # baked model weights, which live in the box IMAGE. The fetch step
+          # populates deploy/models/ for docker build; shipping ~150 MB of
+          # model bytes here blows the updater's 64 MiB bundle sanity cap and
+          # every box refuses the release.
+          tar --exclude='deploy/models' -czf "${BUNDLE}" deploy
+          sha256sum "${BUNDLE}" | tee "${BUNDLE}.sha256"
+          DEPLOY_SHA=$(cut -d' ' -f1 "${BUNDLE}.sha256")
+          mkdir -p bundle-ctx
+          jq -n \
+            --arg version "$REF_NAME" \
+            --arg app_repo "$IMAGE" --arg app_digest "$APP_DIGEST" \
+            --arg upd_repo "$UPDATER_IMAGE" --arg upd_digest "$UPDATER_DIGEST" \
+            --arg pg_repo "$POSTGRES_IMAGE" --arg pg_digest "$POSTGRES_DIGEST" \
+            --arg caddy_repo "docker.io/library/caddy" --arg caddy_digest "$CADDY_DIGEST" \
+            --arg pg_major "$PG_MAJOR" --arg deploy_sha "$DEPLOY_SHA" \
+            '{bundle_schema: 1, version: $version,
+              postgres_major: $pg_major, deploy_sha256: $deploy_sha,
+              images: {
+                app:      {repo: $app_repo,     digest: $app_digest},
+                updater:  {repo: $upd_repo,     digest: $upd_digest},
+                postgres: {repo: $pg_repo,      digest: $pg_digest},
+                caddy:    {repo: $caddy_repo,   digest: $caddy_digest}
+              }}' | tee bundle-ctx/bundle.json
+          cp "${BUNDLE}" bundle-ctx/brain-deploy.tar.gz
+          printf 'FROM scratch\nCOPY bundle.json /bundle.json\nCOPY brain-deploy.tar.gz /brain-deploy.tar.gz\n' \
+            > bundle-ctx/Dockerfile
+
+      # Built + pushed via the same action as the other images: plain `docker
+      # build` would vanish into the buildx container driver's cache, and
+      # RepoDigests[0] is not a reliable way to learn a pushed digest.
+      - id: build_bundle
+        uses: docker/build-push-action@v7
+        with:
+          context: bundle-ctx
+          platforms: linux/amd64,linux/arm64 # data-only, but both arches so an arm64 box's updater can pull it
+          push: true
+          provenance: false # a FROM-scratch data artifact; the cosign sig is the trust
+          tags: ${{ env.BUNDLE_IMAGE }}:${{ env.REF_NAME }}
+      - run: cosign sign --yes "${BUNDLE_IMAGE}@${DIGEST}"
+        env:
+          DIGEST: ${{ steps.build_bundle.outputs.digest }}
+
+      # Publish the GitHub Release LAST among artifacts (everything above can
+      # fail without leaving a half-release), idempotently: a re-run of a
+      # partially-failed tag updates assets instead of dying on "already
+      # exists". release.json is the machine-readable feed entry the updater's
+      # GithubReleasesClient consumes: {version, image_digest, channel} — a
+      # release without one is invisible to the fleet. Yank = delete the
+      # GitHub Release (the anti-rollback floor keeps boxes from sliding back).
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BUNDLE_DIGEST: ${{ steps.build_bundle.outputs.digest }}
+          # Default stable; set the repo variable to "canary" to publish onto
+          # the canary channel instead.
+          RELEASE_CHANNEL: ${{ vars.RELEASE_CHANNEL || 'stable' }}
+        run: |
+          set -euo pipefail
+          BUNDLE="brain-deploy-${REF_NAME}.tar.gz"
+          jq -n --arg v "$REF_NAME" --arg d "$DIGEST" --arg ch "$RELEASE_CHANNEL" \
+            '{version:$v, image_digest:$d, channel:$ch}' > release.json
+          NOTES="Box release ${REF_NAME}
+          Box image: \`${IMAGE}@${DIGEST}\` (cosign-signed, keyless).
+          Bundle: \`${BUNDLE_IMAGE}@${BUNDLE_DIGEST}\` (signed; pins every box component).
+          Install: \`curl -fsSL <this-release>/install.sh | BRAIN_VERSION=${REF_NAME} BRAIN_BUNDLE_SHA256=\$(cut -d' ' -f1 ${BUNDLE}.sha256) BRAIN_BOOTSTRAP_OWNER_NAME=<name> BRAIN_BOOTSTRAP_OWNER_EMAIL=<email> bash -s -- <domain>\`"
+          if gh release view "${REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${REF_NAME}" --clobber "${BUNDLE}" "${BUNDLE}.sha256" deploy/install.sh release.json
+            gh release edit "${REF_NAME}" --notes "${NOTES}"
+          else
+            gh release create "${REF_NAME}" --title "${REF_NAME}" --notes "${NOTES}" \
+              "${BUNDLE}" "${BUNDLE}.sha256" deploy/install.sh release.json
+          fi

@@ -1,0 +1,125 @@
+# The Brain — caddy reverse proxy.
+#
+# caddy is the ONLY public surface. It terminates TLS and reverse-proxies every
+# request to the box (`app:8080`). The customer security group is
+# 443-only, so certificate issuance must work without inbound port 80 or any
+# extra ports:
+#
+#   * Primary: TLS-ALPN-01 — the ACME challenge rides on the TLS handshake on
+#     443 itself, so a 443-only SG can still get + renew certs. This is caddy's
+#     default HTTPS issuer, so no extra config is needed for it.
+#
+#   * Fallback: DNS-01 via Route53 — needed for wildcard certs or
+#     when 443 is not reachable from the ACME CA (split-horizon DNS, private
+#     ingress). This uses the least-privilege IAM you grant,
+#     scoped to the box's hosted zone. Enable by building caddy with the route53
+#     DNS plugin and uncommenting the `tls` block below. Route53 creds come from
+#     the instance role / env (ACME_EMAIL + AWS_* ) — never baked into the image.
+#
+#   * HTTP-01 is deliberately NOT used: it needs inbound port 80 open to the CA,
+#     which the 443-only SG forbids. Port 80 in compose exists only to 301 →
+#     HTTPS for humans who type the bare host.
+#
+# Rate-limited, fallback CA: caddy already retries ACME with a backoff and will
+# fail over to ZeroSSL if Let's Encrypt is rate-limiting; keep the default
+# issuers so a single CA outage doesn't block renewal on a long-lived box.
+
+{
+	# ACME account contact. Set ACME_EMAIL in .env.
+	email {$ACME_EMAIL}
+
+	# --- DNS-01 fallback (uncomment when caddy is built with the route53 plugin) ---
+	# Requires: xcaddy build --with github.com/caddy-dns/route53
+	# acme_dns route53 {
+	# 	max_retries 5
+	# }
+
+	# Keep the staging CA handy for provisioning dry-runs so a botched install
+	# doesn't burn the production rate limit:
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# The box's canonical hostname. BRAIN_DOMAIN comes from
+# .env; caddy provisions + auto-renews the cert for it via TLS-ALPN-01 on 443.
+{$BRAIN_DOMAIN} {
+	encode zstd gzip
+
+	# The write-path canary is an INTERNAL probe the updater calls directly
+	# on the compose network (http://app:8080/canary). It bypasses the kill-switch
+	# gate and performs a DB write, so it must NOT be reachable from the public
+	# internet — reject it at the edge. (handle blocks below are mutually
+	# exclusive and evaluated top-to-bottom, first match wins.)
+	handle /canary* {
+		respond 404
+	}
+
+	# Everything else — /mcp, /api, the collab websocket (/dash/collab), and the
+	# box dashboard SPA — is served by the one box app (same origin
+	# for /api + dashboard; /mcp validated server-side).
+	#
+	# WEBSOCKET PASSTHROUGH, audited (the collab surface depends on it):
+	#   * `reverse_proxy` handles an Upgrade natively — the 101 is passed through
+	#     and the connection is hijacked, so the Connection/Upgrade/Sec-WebSocket-*
+	#     headers reach the box untouched. No extra config, and NO `header_up
+	#     Connection`/`Upgrade` lines: hand-setting those is the classic way to
+	#     BREAK an upgrade caddy already handles.
+	#   * There is deliberately NO `read_timeout`/`write_timeout` here and none in
+	#     the global options block: caddy's defaults are unlimited, and setting
+	#     either would sever a long-lived collab socket that is merely idle
+	#     (someone reading a doc with the tab open). Do not add one.
+	#   * `encode` above does not touch a 101 — an upgraded connection carries no
+	#     encodable response body.
+	#   * `dial_timeout` (3s default) applies to the upstream connect only, not to
+	#     the lifetime of the socket.
+	handle {
+		reverse_proxy app:8080 {
+			# Surface the real client to the box for auditing/rate-limits.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+
+			# The box exposes /healthz (apps/box/src/box.ts); let caddy passively
+			# fail a dead upstream fast rather than hanging member requests. The box
+			# reports NOT-READY the instant a SIGTERM drain begins — before it stops
+			# accepting upgrades — so this check is what stops new sessions being
+			# routed at a box that is about to close its sockets.
+			#
+			# THE 10s INTERVAL IS THE CLIENT'S RECONNECT-BACKOFF BUDGET (phase 2,
+			# p2-t11): on an app recreate EVERY collab socket in the company drops
+			# at once, and caddy can keep 502-ing new handshakes for up to one full
+			# interval AFTER the box is actually serving again. So the client must
+			# (a) cap its backoff well under a minute or a whole company sits
+			# disconnected long past recovery, and (b) jitter it, or the entire
+			# fleet of tabs retries in lockstep on the same 10s boundary. Changing
+			# this interval changes that budget.
+			health_uri /healthz
+			health_interval 10s
+			health_timeout 5s
+		}
+	}
+
+	# Per-customer DNS-01 override lives here if the global block above isn't used:
+	# tls {
+	# 	dns route53
+	# 	resolvers 1.1.1.1
+	# }
+
+	log {
+		output stdout
+		# NB: access logs are operational only; the box, not caddy, owns
+		# content-bearing audit (the `events` table). Keep these URL/status only.
+		# The OAuth callback (/connect/callback) carries ?code=&state= in the URL
+		# (response_mode=query); strip both from the logged URI so a single-use
+		# authorization code never lands in docker logs / a log shipper. The
+		# collab websocket (/dash/collab) carries ?ticket= for the same reason a
+		# browser cannot set headers on a websocket open — strip it too; the
+		# ticket is short-lived, but "short-lived" is not "loggable".
+		format filter {
+			wrap json
+			request>uri query {
+				delete code
+				delete state
+				delete ticket
+			}
+		}
+	}
+}

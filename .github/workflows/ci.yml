@@ -1,0 +1,200 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The required merge gate: lint · typecheck · unit ·
+# integration (ephemeral PG17) · e2e (real box + MCP client) · scenarios ·
+# A scenario regression BLOCKS merge. NOTE: which of these are ENFORCED as merge
+# gates lives in GitHub branch-protection required-status-checks, not this file —
+# keep that list in sync when adding/removing jobs.
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel a main-branch run: the release gate requires a
+  # fully-green push run for the tagged SHA, and a cancelled run is the ONLY run
+  # for a mergeable commit if rapid merges cancel each other — an unreleaseable
+  # commit. PR runs still cancel to save CI.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm lint
+      - run: pnpm format:check
+      # Static-check the workflows themselves, INSIDE the already-required ci gate
+      # (a separate workflow would be a required check the release-gate can't see).
+      # Pinned to an immutable version tag + release so CI and local agree.
+      - name: actionlint (static-check .github/workflows)
+        run: |
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+      # Regression guard: the `prepare` hook-wiring script MUST exit 0 even with
+      # no .git present (Docker build context has none). A non-zero exit there
+      # fails every image build → no signed bundle → the fleet stops self-updating
+      # (a latch failure seen in production). This asserts the guard/`exit 0` can never be dropped.
+      - name: prepare-hooks.sh no-ops outside a git checkout
+        run: |
+          d=$(mktemp -d)
+          cp scripts/prepare-hooks.sh "$d"
+          ( cd "$d" && sh prepare-hooks.sh )
+          test $? -eq 0
+
+  # Security gates: a committed-secret scan and a dependency audit. Neither
+  # failure mode is caught by build/test jobs, so they get their own job.
+  #
+  # The two halves are deliberately weighted differently:
+  #   - the secret scan BLOCKS. A committed credential is never acceptable and
+  #     the check is deterministic, so a failure is always a real defect.
+  #   - the dependency audit REPORTS. Advisories appear on someone else's
+  #     schedule, so a blocking gate would wedge every unrelated PR the moment
+  #     a new CVE lands upstream. Dependabot (.github/dependabot.yml) is what
+  #     actually drives these to zero; this job makes the exposure visible on
+  #     every PR instead of only when someone thinks to look.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Committed-secret scan (blocking)
+        run: node scripts/security-scan.mjs
+      - name: High-severity production advisories (report only)
+        continue-on-error: true
+        run: pnpm audit --prod --audit-level high
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm typecheck
+
+  unit:
+    runs-on: ubuntu-latest
+    env:
+      # The reviewed runner-class slack for the gating graph benchmark
+      # (perf.bench.test.ts). The original 2.5 was set from an ESTIMATE
+      # ("ubuntu-latest is commonly 1.5-2.5x slower"); real runner MEASUREMENTS
+      # disagreed: observed 5k tick medians of 84.6 / 85.6 / 94.96 / 100.5ms
+      # against a 62.5ms budget (25ms x 2.5) — i.e. 7-9x the ~11.5ms local
+      # median, so the gate was red on runner noise and blocked at least four
+      # PRs that never touched the physics path. 6 puts the budget at 150ms:
+      # ~1.5x headroom over the worst OBSERVED median, while a genuine multi-x
+      # regression (e.g. the uniformly-zero-radius forceCollide trap, ~3x tick
+      # cost => ~300ms here) still fails. Recalibrated 2026-07-29 from those
+      # four measurements per the bench file's rule: from real runner data,
+      # never to green a red build.
+      GRAPH_BENCH_SLACK: "6"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm test:unit
+
+  integration:
+    runs-on: ubuntu-latest
+    # Ephemeral PG17 is started per-suite by the testcontainers harness, so no
+    # service container is declared here (the harness controls collation/roles).
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm test:integration
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm test:e2e
+
+  scenarios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm test:scenarios
+
+  # The ONLY real-browser suite in the repo (apps/box/ui/e2e): a WebGL canvas
+  # that must start under the box's CSP with no unsafe-eval, in-browser collab
+  # convergence + presence across two contexts, the frame budget, and the
+  # phone's pinch/tap/PWA/a11y checks. Every jsdom/node job above is blind to
+  # all of it — they stub the worker and canvas and have no WebGL — so a CSP
+  # regression, a broken Pixi/WebGL init or a presence-projection break would
+  # merge green without this. Playwright's webServer builds the SPA and stands
+  # up a docker-Postgres box (ubuntu-latest ships docker).
+  #
+  # BRAIN_DEV_GRAPH_SCALE is deliberately NOT set, so the 55fps frame-budget
+  # test self-skips here. ubuntu-latest has no GPU: Chromium rasterizes the
+  # 5,000-node WebGL canvas through SwiftShader on a shared 4-vCPU runner, and
+  # per the repo's own perf doctrine (perf.bench.test.ts: "CI has no GPU. A
+  # frame-rate assertion on a swiftshader/llvmpipe WebGL context ... would be
+  # simultaneously too slow to pass and too noisy to trust") that gate cannot
+  # pass as written — it would be red on every run until someone deleted it.
+  # The frame budget stays what the design spec says it is: a deliberate
+  # MANUAL gate, run at scale on real hardware. The CPU-side budgets are still
+  # gated in the unit job (perf.bench.test.ts, GRAPH_BENCH_SLACK above).
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      # Both projects: desktop chromium (workspace.spec.ts) and iOS WebKit
+      # (mobile.spec.ts). --with-deps pulls the OS libraries the browsers need.
+      - run: pnpm --filter @brain/box-ui exec playwright install --with-deps chromium webkit
+      - run: pnpm --filter @brain/box-ui test:mobile
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-e2e-report
+          path: apps/box/ui/playwright-report/
+          retention-days: 7

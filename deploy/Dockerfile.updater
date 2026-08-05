@@ -1,0 +1,41 @@
+# The Brain — updater image.
+#
+# A separate, independently-versioned container that keeps the box on the right
+# release: poll booth → cosign-verify → docker pull BY DIGEST → migrate →
+# recreate `app` → write-canary → rollback on a broken write path.
+#
+# It drives the HOST docker daemon (socket mount) with the docker CLI + compose
+# plugin, and verifies releases with cosign before anything is pulled — so the
+# runtime base is docker's official CLI image (alpine) with node + cosign added,
+# rather than a node image with docker bolted on.
+
+# ---------------------------------------------------------------- build
+# Pinned to the native BUILD platform — the updater is arch-independent JS, so
+# it compiles once on amd64 instead of rerunning the whole pnpm build under
+# emulated arm64. The runtime stage (per target arch) adds node+cosign via apk
+# and copies the built /prod/updater in.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+WORKDIR /app
+COPY . /app
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+RUN pnpm --recursive run build
+# Self-contained production deployment of just the updater (same recipe as the box).
+RUN pnpm --filter @brain/updater deploy --prod --legacy /prod/updater
+# C1 anti-reverse-engineering — same treatment as the box image.
+RUN node scripts/minify-dist.mjs /prod/updater
+
+# ---------------------------------------------------------------- runtime
+FROM docker:27-cli AS runtime
+ENV NODE_ENV=production
+# nodejs runs the loop; cosign verifies keyless signatures + SLSA provenance
+#; tini reaps + forwards signals around the long-lived poll loop.
+RUN apk add --no-cache nodejs cosign tini
+COPY --from=build /prod/updater /app
+WORKDIR /app
+# Runs as root BY DESIGN: it owns the host docker socket (that access — swap the
+# app container — is its entire job; the socket is the privilege, not the uid).
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/main.js"]

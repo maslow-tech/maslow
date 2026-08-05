@@ -1,0 +1,35 @@
+{
+  "name": "@brain/box",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "dev:box": "tsx dev/dev-box.ts",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@brain/mcp-tools": "workspace:*",
+    "@brain/schema": "workspace:*",
+    "@brain/shared": "workspace:*",
+    "@hocuspocus/server": "^2.15.3",
+    "@hono/node-server": "^2.0.5",
+    "@huggingface/transformers": "^3.7.0",
+    "fflate": "^0.8.3",
+    "hono": "^4.12.32",
+    "pg": "^8.13.1",
+    "unpdf": "^1.8.0",
+    "ws": "^8.18.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.20"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13"
+  }
+}

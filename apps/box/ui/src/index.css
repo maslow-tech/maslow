@@ -1,0 +1,994 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Geist Pixel — self-hosted (from the `geist` package), so it rides the box's
+   own origin and the strict font-src 'self' CSP. Used only for brand display
+   moments (the wordmark, the login title), never body text. */
+@font-face {
+  font-family: "Geist Pixel";
+  src: url("./fonts/GeistPixel-Square.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+/* Two skins over one structure (data-theme on <html>):
+   - light (default): the paper skin — a black-and-white, paper-quiet CHROME
+     (surfaces, hairlines, near-black primary buttons), with identity carried
+     by a MUTED coloured-ink register: 600/700-band type/enum hues that read as
+     ink on white, never as candy tags (see lib/ui.ts LIGHT_TYPE_HUES /
+     LIGHT_ENUM_TINTS and PresenceRail PRESENCE_INK.light). Colour is quiet
+     here, not absent.
+   - dark: the aurora skin, continuous with the OAuth card (#060608 ground,
+     oklch(0.54 0.22 264.376) accent, saturated type-colored dots).
+   Components never hardcode colors — they use these tokens (or ask the
+   theme context whether the skin is monochrome) so both skins stay in
+   register. */
+
+:root {
+  --ground: #ffffff;
+  --panel: #fafafa;
+  --panel2: #f4f4f5;
+  --overlay: #ffffff;
+  --ink: #18181b;
+  --ink-strong: #000000;
+  --mut: #52525b;
+  /* Informational text floor, not a decorative grey: #6b6b74 clears WCAG AA
+     (~5.3:1 on white) so timestamps/counts/metadata are actually readable,
+     while staying a clear step below --mut for hierarchy. */
+  --dim: #6b6b74;
+  --line: rgba(0, 0, 0, 0.12);
+  --line-soft: rgba(0, 0, 0, 0.065);
+  --brand: #111111;
+  --accent-soft: rgba(0, 0, 0, 0.07);
+  --link: #111111;
+  --mark-bg: rgba(0, 0, 0, 0.08);
+  --mark-fg: #111111;
+  --btn-from: #1a1a1a;
+  --btn-to: #000000;
+  --btn-fg: #ffffff;
+  --focus: rgba(0, 0, 0, 0.15);
+  --hover: rgba(0, 0, 0, 0.04);
+  --hover-strong: rgba(0, 0, 0, 0.07);
+  /* shadow-as-border (jakub.kr): 1px ring + lift + ambient — adapts to any
+     ground where a solid border can't */
+  --shadow-border:
+    0px 0px 0px 1px rgba(0, 0, 0, 0.06), 0px 1px 2px -1px rgba(0, 0, 0, 0.06),
+    0px 2px 4px 0px rgba(0, 0, 0, 0.04);
+  --shadow-border-hover:
+    0px 0px 0px 1px rgba(0, 0, 0, 0.08), 0px 1px 2px -1px rgba(0, 0, 0, 0.08),
+    0px 2px 4px 0px rgba(0, 0, 0, 0.06);
+  color-scheme: light;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  /* The paper skin has ONE primary: ink, matching the black-gradient
+     .btn-primary. shadcn's default blue is the generic template leak the
+     monochrome thesis exists to avoid, so the default Button reads as ink
+     here too — dark keeps its deliberate indigo accent below. */
+  --primary: oklch(0.18 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  /* Warning/attention amber — the twin of --destructive, tuned per skin so a
+     retune of "what a warning looks like" reaches every warning surface at once
+     (the conflict banner, a board's failed-write state) instead of leaving raw
+     Tailwind amber-500 stranded. Paper wants the deeper amber-600 band to read
+     against white; aurora lifts to amber-400. Use with opacity modifiers for
+     the soft fills, exactly as the destructive surfaces do. */
+  --warn: oklch(0.666 0.179 58.318);
+  /* Healthy/positive green — the third status ink, twin to --destructive and
+     --warn, so "what a success looks like" retunes in one place instead of
+     leaving raw Tailwind green-500 stranded. Paper takes the deeper green-700
+     band: it doubles as small-text foreground (a saturated green-600 fails AA on
+     white) AND as a status dot fill, exactly as --destructive serves both. */
+  --success: oklch(0.527 0.154 150.069);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.809 0.105 251.813);
+  --chart-2: oklch(0.623 0.214 259.815);
+  --chart-3: oklch(0.546 0.245 262.881);
+  --chart-4: oklch(0.488 0.243 264.376);
+  --chart-5: oklch(0.424 0.199 265.638);
+  --radius: 0rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.546 0.245 262.881);
+  --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+:root[data-theme="dark"] {
+  --ground: #060608;
+  --panel: rgba(13, 13, 18, 0.85);
+  --panel2: #0a0a10;
+  --overlay: #111118;
+  --ink: #ecedf1;
+  --ink-strong: #ffffff;
+  --mut: #8b8b98;
+  /* AA-legible informational grey on the aurora ground (~4.6:1 on #060608),
+     a step below --mut so the hierarchy survives the lift out of the sub-3:1
+     range the old #5c5c68 sat in. */
+  --dim: #82828f;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --brand: oklch(0.54 0.22 264.376);
+  --accent-soft: rgba(74, 108, 245, 0.16);
+  --link: oklch(0.72 0.16 264.376);
+  --mark-bg: rgba(74, 108, 245, 0.16);
+  --mark-fg: #c9b8ff;
+  --btn-from: #8a6cff;
+  --btn-to: #6a45f5;
+  --btn-fg: #ffffff;
+  --focus: rgba(74, 108, 245, 0.18);
+  --hover: rgba(255, 255, 255, 0.05);
+  --hover-strong: rgba(255, 255, 255, 0.07);
+  /* dark ground: layered depth is invisible — a single white ring reads best */
+  --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: #0d0d12;
+  --card-foreground: var(--ink);
+  --popover: var(--overlay);
+  --popover-foreground: var(--ink);
+  --primary: oklch(0.54 0.22 264.376);
+  --primary-foreground: #ffffff;
+  --secondary: var(--panel2);
+  --secondary-foreground: var(--ink);
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: var(--mut);
+  --accent: var(--hover-strong);
+  --accent-foreground: var(--ink);
+  --destructive: oklch(0.704 0.191 22.216);
+  --warn: oklch(0.828 0.189 84.429);
+  /* Aurora lifts the status inks to brights (like --destructive/--warn above);
+     green-500 clears AA on the near-black ground and reads as a live "ok". */
+  --success: oklch(0.723 0.219 149.579);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: rgba(74, 108, 245, 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-overlay: var(--overlay);
+  --color-ink: var(--ink);
+  --color-ink-strong: var(--ink-strong);
+  --color-mut: var(--mut);
+  --color-dim: var(--dim);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-brand: var(--brand);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent: var(--accent);
+  --color-hover: var(--hover);
+  --color-hover-strong: var(--hover-strong);
+  --font-sans: "Geist Variable", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-pixel: "Geist Pixel", "Geist Variable", sans-serif;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-warn: var(--warn);
+  --color-success: var(--success);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ------------------------------------------------------------------- motion
+   ONE clock for the whole workspace. Every transition and animation in this
+   file — and every hand-rolled inline style in the components — reads these
+   tokens instead of inventing a duration, so the dashboard moves like one
+   object rather than fifteen.
+
+   Durations follow the frequency rule: the more often you see a thing, the
+   less it moves. A row tint (hundreds of times an hour) is at the floor of
+   perception; a drawer that travels the width of a pane gets the longest
+   clock, and nothing exceeds 260ms.
+
+   Easings follow the standard blueprint: ease-out for anything entering or
+   leaving, ease-in-out for something already on screen moving, plain `ease`
+   for colour/tint. `ease-in` is never used — it delays the feedback.
+
+   Reduced motion is handled by COLLAPSING THE TOKENS (below), not by patching
+   each rule. That kills the displacement too, not only the duration — the
+   universal `transition-duration: 0.01ms` floor at the bottom of this file
+   makes a lift instant, but it still MOVES; a collapsed `--lift` does not. */
+:root {
+  --ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --ease-in-out: cubic-bezier(0.645, 0.045, 0.355, 1);
+  --ease-hover: ease;
+
+  --dur-tint: 90ms; /* hover tint, focus ring, cell repaint */
+  --dur-fast: 140ms; /* route reveal, chip/badge settle */
+  --dur-base: 180ms; /* palette, popovers, menus */
+  --dur-slow: 240ms; /* side peek, dialogs — the longest travel we ship */
+  --dur-ambient: 1.1s; /* breathing loops: "searching deeper…" */
+
+  /* Displacements. Tokens so reduced motion can zero them, and so a lift is
+     the same lift everywhere. */
+  --lift-row: -1px;
+  --lift-card: -2px;
+  --press: 0.96;
+  --icon-pop: 1.08;
+
+  /* Keyboard affordance: one ring, both skins, drawn from the ink we already
+     have (no new palette). */
+  --ring-w: 2px;
+  --ring-gap: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-tint: 1ms;
+    --dur-fast: 1ms;
+    --dur-base: 1ms;
+    --dur-slow: 1ms;
+    --lift-row: 0px;
+    --lift-card: 0px;
+    --press: 1;
+    --icon-pop: 1;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  /* dynamic values everywhere (counts, stats, dates) — no layout shift */
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+p {
+  text-wrap: pretty;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+/* the one primary button */
+.btn-primary {
+  color: var(--btn-fg);
+  background: linear-gradient(180deg, var(--btn-from), var(--btn-to));
+  transition:
+    transform var(--dur-tint) var(--ease-hover),
+    filter var(--dur-fast) var(--ease-hover);
+}
+.btn-primary:hover {
+  transform: translateY(var(--lift-row));
+  filter: brightness(1.12);
+}
+.btn-primary:active {
+  transform: translateY(0) scale(var(--press));
+}
+
+/* card = elevated surface: shadow ring instead of a border (dividers stay
+   borders). Interruptible hover via transition, exact properties only. A
+   slight lift on hover reads as "this is reachable" without being showy. */
+.card {
+  box-shadow: var(--shadow-border);
+  transition-property: box-shadow, transform;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+.card:hover {
+  box-shadow: var(--shadow-border-hover);
+  transform: translateY(var(--lift-card));
+}
+
+/* -------------------------------------------------------- hover affordances
+   Three shapes cover every list surface in the workspace — a row (table,
+   sidebar, search result), a card (gallery, board, home tile), and a node
+   (graph, minimap). They exist as classes so a new surface inherits the same
+   feel instead of hand-rolling a fourth.
+
+   All of it sits inside `@media (hover: hover)`: on a touch screen a tap
+   latches :hover, which leaves a phantom highlighted row behind after you
+   navigate. */
+@media (hover: hover) and (pointer: fine) {
+  .hover-row {
+    transition: background-color var(--dur-tint) var(--ease-hover);
+  }
+  .hover-row:hover {
+    background-color: var(--hover);
+  }
+
+  .hover-card {
+    transition:
+      box-shadow var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      border-color var(--dur-tint) var(--ease-hover);
+  }
+  .hover-card:hover {
+    transform: translateY(var(--lift-card));
+    box-shadow: var(--shadow-border-hover);
+  }
+
+  .hover-node {
+    transition:
+      opacity var(--dur-tint) var(--ease-hover),
+      fill var(--dur-tint) var(--ease-hover),
+      stroke var(--dur-tint) var(--ease-hover);
+  }
+
+  /* A type's glyph nudges when its row is hovered — the smallest possible
+     "this line is live". Scale only, off the compositor, and the token is 1
+     under reduced motion so it becomes a no-op. */
+  .type-icon {
+    transition: transform var(--dur-tint) var(--ease-out);
+  }
+  .group:hover .type-icon {
+    transform: scale(var(--icon-pop));
+  }
+}
+
+/* --------------------------------------------------------- keyboard rings
+   Every interactive thing gets a visible ring when it is reached by keyboard,
+   including the ones nobody remembered to style: bare links in a table cell,
+   a div with tabindex, a summary, a contenteditable block.
+
+   Two deliberate choices:
+   - `:where(...)` + `@layer base` = zero specificity in the lowest layer, so
+     every component's own `focus-visible:` utility (buttons, inputs, the
+     grid cells) still wins and nothing double-rings.
+   - the ring is `--ink-strong` (black on the paper skin, white on aurora):
+     maximum contrast against both grounds, and no new palette entry. */
+@layer base {
+  :where(
+    a[href],
+    area[href],
+    button,
+    summary,
+    input,
+    select,
+    textarea,
+    [contenteditable="true"],
+    [tabindex]:not([tabindex^="-"]),
+    [role="button"],
+    [role="link"],
+    [role="option"],
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"],
+    [role="tab"],
+    [role="checkbox"],
+    [role="switch"],
+    [role="gridcell"],
+    [role="columnheader"]
+  ):focus-visible {
+    outline: var(--ring-w) solid var(--ink-strong);
+    outline-offset: var(--ring-gap);
+  }
+
+  /* A mouse click must never leave a ring behind (Safari/Firefox still paint
+     the default outline on :focus for some of the above). */
+  :where(a, button, summary, [tabindex]):focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* Opt-in ring for surfaces that draw their own focusable geometry — an SVG
+   node in the graph, a canvas cell — where `outline` has nothing to hug. */
+.focus-ring:focus-visible {
+  outline: var(--ring-w) solid var(--ink-strong);
+  outline-offset: var(--ring-gap);
+}
+.focus-ring-inset:focus-visible {
+  outline: var(--ring-w) solid var(--ink-strong);
+  outline-offset: calc(-1 * var(--ring-w));
+}
+
+/* Route-level content reveal: one fast ease-out fade, opacity+transform only.
+   Navigation happens constantly, so this sits at the floor of perception —
+   continuity without ever reading as a delay. */
+.page-in {
+  animation: page-in var(--dur-fast) var(--ease-out) both;
+}
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Search deep-pass reveal: provenance badges and via-trails pop in when the
+   hybrid pass lands over the quick results — opacity+transform only, one fast
+   ease-out, so the upgrade reads as a settle rather than a repaint. The
+   universal reduced-motion floor above flattens it. */
+.match-badge {
+  animation: match-in var(--dur-slow) var(--ease-out) both;
+}
+@keyframes match-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The "searching deeper…" dot breathes while the deep pass is in flight. */
+.deep-pulse {
+  animation: deep-pulse var(--dur-ambient) var(--ease-in-out) infinite;
+}
+@keyframes deep-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Command palette: paired backdrop + panel, same clock (180ms ease-out);
+   panel enters from scale(.98), never scale(0). */
+.palette-backdrop {
+  animation: palette-fade var(--dur-base) var(--ease-out) both;
+}
+.palette-panel {
+  animation: palette-in var(--dur-base) var(--ease-out) both;
+  will-change: transform;
+}
+@keyframes palette-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-in,
+  .palette-backdrop,
+  .palette-panel,
+  .empty-in,
+  .match-badge {
+    animation: none;
+  }
+}
+
+/* An empty state is the answer to a query that finished, so it settles in
+   rather than appearing: same clock as the route reveal, so arriving at an
+   empty database and arriving at a full one feel like the same navigation. */
+.empty-in {
+  animation: page-in var(--dur-fast) var(--ease-out) both;
+}
+
+/* Skeletons: one breath for every placeholder on the page, so a table of ten
+   skeleton rows reads as one loading surface instead of ten. Slow and shallow
+   on purpose — a placeholder that pulses hard competes with the content it is
+   standing in for. The reduced-motion floor at the bottom stops it. */
+[data-slot="skeleton"] {
+  animation: skeleton-breathe 1.6s var(--ease-in-out) infinite;
+}
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+input.token-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 4px var(--focus);
+}
+
+/* ------------------------------------------------------------------ markdown
+   The body of an object is the hero of its page. One boundary renders every
+   untrusted string as text (react-markdown, raw HTML disabled) — these styles
+   only make that text beautiful. */
+.md {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  margin: 1.6em 0 0.5em;
+}
+.md h1 {
+  font-size: 1.45em;
+}
+.md h2 {
+  font-size: 1.2em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--line-soft);
+}
+.md h3 {
+  font-size: 1.05em;
+}
+.md p {
+  margin: 0.65em 0;
+}
+.md a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+.md a:hover {
+  border-bottom-color: var(--link);
+}
+.md strong {
+  font-weight: 650;
+  color: var(--ink-strong);
+}
+.md ul,
+.md ol {
+  margin: 0.65em 0;
+  padding-left: 1.4em;
+}
+/* Tailwind's preflight strips list markers globally; a list that reads as a
+   list is the whole point of a list, so restore them here (this is the one
+   place untrusted-markdown lists render, editor included). */
+.md ul {
+  list-style: disc;
+}
+.md ul ul {
+  list-style: circle;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.25em 0;
+}
+.md li::marker {
+  color: var(--dim);
+}
+/* GFM task lists carry their own checkbox — no bullet beside it. */
+.md ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.md li.task-list-item {
+  list-style: none;
+}
+.md input[type="checkbox"] {
+  accent-color: var(--brand);
+  margin-right: 0.45em;
+}
+.md blockquote {
+  margin: 0.9em 0;
+  padding: 0.1em 1em;
+  border-left: 2px solid var(--brand);
+  color: var(--mut);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--panel2);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+.md pre {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0.9em 0;
+}
+.md pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  width: 100%;
+  font-size: 0.93em;
+}
+.md th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--mut);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.md th,
+.md td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 7px 14px 7px 0;
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.6em 0;
+}
+.md del {
+  color: var(--dim);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drift {
+  from {
+    transform: translate3d(-4%, -3%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(5%, 4%, 0) scale(1.08);
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.424 0.199 265.638);
+  --primary-foreground: oklch(0.97 0.014 254.604);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.809 0.105 251.813);
+  --chart-2: oklch(0.623 0.214 259.815);
+  --chart-3: oklch(0.546 0.245 262.881);
+  --chart-4: oklch(0.488 0.243 264.376);
+  --chart-5: oklch(0.424 0.199 265.638);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.623 0.214 259.815);
+  --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* --------------------------------------------------------- the phone shell
+   A 390px viewport is not a small desktop. Three things change here and only
+   here: the sidebar becomes an off-canvas drawer, the OS's own furniture (the
+   notch, the home indicator, a rotated device's rounded corners) is kept out
+   of the layout with env(safe-area-inset-*), and every target a thumb has to
+   hit grows to 44px. Skin-neutral throughout — these rules move geometry and
+   never name a color that the two themes don't already own. */
+
+/* Safe areas. `env()` falls back to 0 anywhere the browser has no inset, so
+   these are free on a laptop and load-bearing on an iPhone in standalone mode
+   (index.html sets viewport-fit=cover, which is what makes the insets real). */
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Content scrolls clear of the bottom bar AND of the home indicator under it,
+   so the last row of a list is never a target you cannot reach. */
+.pad-bottom-bar {
+  padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+}
+
+/* The drawer stays mounted while closed — that is what lets it slide instead
+   of appear — and is held off-screen by a transform. `inert` (set by the
+   Shell) is what keeps its links out of the tab order meanwhile; this rule
+   only moves it. */
+.mobile-drawer {
+  transition: transform var(--dur-base) var(--ease-out);
+  will-change: transform;
+}
+.mobile-drawer[data-open="false"] {
+  transform: translateX(-100%);
+}
+.mobile-drawer[data-open="true"] {
+  transform: none;
+}
+.drawer-backdrop {
+  animation: palette-fade var(--dur-base) var(--ease-out) both;
+}
+/* The universal floor below already collapses these to ~0ms; naming them here
+   as well means a reduced-motion drawer is definitively a jump-cut, not a
+   very fast slide that still crosses the screen. */
+@media (prefers-reduced-motion: reduce) {
+  .mobile-drawer {
+    transition: none;
+  }
+  .drawer-backdrop {
+    animation: none;
+  }
+}
+
+/* 44x44 is the floor for anything a finger aims at. Scoped to `.touch-chrome`
+   (the drawer and the bottom bar) plus explicit `.touch-target` opt-ins rather
+   than applied to every control on the page — a link inside a markdown
+   paragraph is read, not tapped, and inflating it would wreck the prose. */
+@media (pointer: coarse) {
+  .touch-target,
+  .touch-chrome a,
+  .touch-chrome button,
+  .touch-chrome [data-slot="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* A hover-revealed control is a control that does not exist on a touch
+     screen. */
+  .touch-reveal {
+    opacity: 1;
+  }
+  /* Presence avatars are 24px and overlap by 6px — a tight pile that reads well
+     under a mouse but is a mis-tap machine on a finger, where a tappable avatar
+     opens a peer's object. On a coarse pointer raise each to the 44px floor and
+     swap the -6px overlap for a small positive gap so adjacent targets stop
+     sharing pixels. `min-*` (not `height`/`width`) so the "+N" chip can still
+     grow with its label. Mirrors `.touch-target`, scoped to this one pile. */
+  .presence-avatar {
+    min-height: 44px;
+    min-width: 44px;
+    margin-left: 4px;
+    font-size: 12px;
+  }
+  .presence-avatar:first-child {
+    margin-left: 0;
+  }
+}
+
+/* --------------------------------------------------- phone database views
+   A table, a board, a wall of cards and a month grid are four different
+   answers to "what does this data look like", and all four need a different
+   shape on a 390px screen than on a 1440px one. These rules are the parts of
+   that which belong in CSS rather than in a component: scrolling physics, the
+   pinned column's separator, and the sheet's motion. Skin-neutral — every
+   colour here is a token both themes already own. */
+
+/* Momentum + containment for every horizontal scroller in a data view: the
+   table's own container (shadcn's `Table` wraps in one) and the board's column
+   strip. `overscroll-behavior-x: contain` is the load-bearing half — without
+   it, swiping past the last board column triggers the browser's back-gesture
+   and the member loses the page they were reading. */
+[data-slot="table-container"],
+.momentum-x {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* The right-edge scroll cue for the board — the pipeline continues past the
+   viewport. Sits over the scroller's right edge (its wrapper is the frame, not
+   the scroller) so it does not travel with the columns. Fades to the page
+   ground, which both skins own. */
+.board-scroll-fade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 40px;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--ground));
+}
+
+/* The right-edge scroll cue for the phone table. A grid wider than a 390px
+   screen clips its last column at the viewport edge; without a signal that
+   reads as broken. This fade sits over the visible right edge (its wrapper is
+   the frame, not the scroller, so it does not scroll away) and says "there is
+   more table this way". Skin-neutral — it fades to the page ground both skins
+   already own. */
+.table-scroll-fade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--ground));
+}
+
+/* The table's pinned title column. `position: sticky` comes from the component
+   (it is conditional on the phone frame); this is only the hairline that says
+   there is more table underneath it — an edge, not a drop shadow, so it reads
+   the same on paper-white and on the aurora ground. */
+.pinned-col::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+
+/* Bottom sheet: the filter/sort/group builder and the phone's side-peek. It
+   rises from the bottom edge, which is both the convention and the half of the
+   screen a thumb owns. */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+.sheet-panel {
+  animation: sheet-up var(--dur-base) var(--ease-out) both;
+  will-change: transform;
+}
+.sheet-backdrop {
+  animation: palette-fade var(--dur-base) var(--ease-out) both;
+}
+/* The universal reduced-motion floor below already collapses the duration;
+   naming them makes a reduced-motion sheet definitively a jump cut. */
+@media (prefers-reduced-motion: reduce) {
+  .sheet-panel,
+  .sheet-backdrop {
+    animation: none;
+  }
+}
+
+/* iOS zooms the whole page in when it focuses an input whose text is under
+   16px, and never zooms back out. Raising the floor (never lowering a bigger
+   size) is the only reliable cure short of blocking pinch-zoom, which would
+   cost more accessibility than it buys. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* Universal reduced-motion floor: near-instant transitions/animations for
+   anyone who's said so at the OS level, including hand-rolled CSS
+   transitions set via inline style (e.g. the graph's hover/opacity
+   transitions) — !important is the standard, deliberate way to win over
+   inline transition-duration here. The graph's own JS-driven pan/zoom tween
+   (GraphView's animateView) checks the same media query independently and
+   jumps straight to the target instead of easing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

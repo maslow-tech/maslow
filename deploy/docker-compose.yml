@@ -1,0 +1,392 @@
+# The Brain — one box per team.
+#
+#   member's Claude → /mcp  ┐
+#   browser → dashboard     ┘→ caddy (TLS, ONLY public port) → app (box, Node/Hono)
+#                                                              app → postgres
+#                                                              app → booth (validate/heartbeat)
+#
+# Only caddy publishes ports (80/443). app + postgres + updater talk over the
+# private compose network and are NEVER exposed to the host/SG (the box's
+# security group is 443-only). Values come from a local `.env` you copy
+# from `.env.example`; install.sh generates real values into deploy/.env on the box
+# — this compose is the local/dev shape of the same topology.
+
+name: brain
+
+# Bounded json-file logs per container: an incident window must survive days.
+# An unbounded Caddy access-log flood can rotate away the evidence within
+# hours. Caps apply when a container is (re)created,
+# which is exactly what the updater's reconcile does on every release.
+x-log-default: &log-default
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+x-log-caddy: &log-caddy
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "4"
+
+services:
+  # ---------------------------------------------------------------- caddy
+  # The only public surface. Terminates TLS via ACME (see Caddyfile) and reverse
+  # proxies to the box. 80 is kept only for the ACME HTTP→HTTPS redirect.
+  caddy:
+    # Third-party image, digest-pinned IN-REPO (a bump is a reviewable PR
+    # event; release.yml reads this exact pin into the signed bundle — no
+    # registry lookup at release time). The updater reconciles boxes to the
+    # bundle's pin via BRAIN_CADDY_IMAGE; the fallback serves local/dev.
+    image: ${BRAIN_CADDY_IMAGE:-caddy:2.8@sha256:226d1f059b75399fe19182893c7184591c07b97afc8dfcf44eeb80c9a77a530f}
+    logging: *log-caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      BRAIN_DOMAIN: ${BRAIN_DOMAIN:?set BRAIN_DOMAIN in .env}
+      # ACME contact + optional Route53 creds for the DNS-01 fallback (Caddyfile).
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # ACME account + issued certs (must persist)
+      - caddy_config:/config
+    networks: [edge, brain]
+
+  # ---------------------------------------------------------------- app (the box)
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # In prod the updater (below) sets the image by DIGEST; locally we build.
+    image: ${BRAIN_IMAGE:-brain/box:local}
+    logging: *log-default
+    restart: unless-stopped
+    # Docker's default SIGTERM window is 10 SECONDS, and this container is
+    # recreated on every release and every signed restart op. The box holds live
+    # collab rooms in memory — up to ~30s of typed text that exists nowhere else
+    # until a flush — so the default would SIGKILL the box mid-drain and eat the
+    # last paragraph of everyone who was typing, silently, on every update.
+    # 45s covers the whole budgeted drain (apps/box/src/shutdown.ts: 20s rooms +
+    # 5s audit queue, hard ceiling 30s) with headroom; a unit test asserts this
+    # number matches COMPOSE_STOP_GRACE_SECONDS so the two cannot drift.
+    # NB: compose v2 uses this as the default stop timeout for `stop`/`restart`
+    # (the updater's forceRestartApp path) as long as no `--timeout` is passed.
+    stop_grace_period: 45s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      # brain_app pool (DML) and the brain_owner executor connection (DDL only,
+      # never distributed). apps/box/src/index.ts reads these.
+      BRAIN_APP_DATABASE_URL: ${BRAIN_APP_DATABASE_URL:?set in .env}
+      BRAIN_OWNER_DATABASE_URL: ${BRAIN_OWNER_DATABASE_URL:?set in .env}
+      # Box→booth telephone target + kill-switch; optional in
+      # local/dev — absent these three, the box runs ungated.
+      BRAIN_BOOTH_URL: ${BRAIN_BOOTH_URL:-}
+      BRAIN_TOKEN: ${BRAIN_TOKEN:-}
+      BRAIN_BOOTH_PUBLIC_KEY_B64: ${BRAIN_BOOTH_PUBLIC_KEY_B64:-}
+      # Public origin, e.g. https://brain.example.com. When set the box runs its
+      # own OAuth authorization server so claude.ai/Desktop can add it in one
+      # click (MCP auth). Absent it, only static-bearer / pre-issued JWTs work.
+      BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-}
+      # The box's canonical domain (same value caddy serves) — surfaced on
+      # /boxinfo and ridden up on heartbeats so the optional control-plane console shows the
+      # real name, not the enroll-time hostname.
+      BRAIN_DOMAIN: ${BRAIN_DOMAIN:-}
+      # base64 PEM of an EC P-256 private key that signs OAuth access tokens;
+      # set in prod so issued JWTs survive restarts / validate across replicas.
+      BRAIN_OAUTH_SIGNING_KEY_B64: ${BRAIN_OAUTH_SIGNING_KEY_B64:-}
+      # base64 of exactly 32 bytes — encrypts connector credentials at rest
+      # (connector_config); held here, OUTSIDE the database, on purpose.
+      BRAIN_CONNECTOR_TOKEN_KEY: ${BRAIN_CONNECTOR_TOKEN_KEY:-}
+      # Disk write-shed: the app measures the pgdata volume
+      # (mounted :ro below) and REFUSES content writes past BRAIN_WRITE_SHED_PCT
+      # so a full disk can never corrupt postgres — reads always work.
+      BRAIN_DATA_PATH: ${BRAIN_DATA_PATH:-/var/lib/brain-pgdata}
+      BRAIN_WRITE_SHED_PCT: ${BRAIN_WRITE_SHED_PCT:-90}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    volumes:
+      # Durable OAuth client registry — survives container recreation/restart so
+      # a connected claude.ai client's registration isn't invalidated.
+      - oauth_state:/var/lib/brain-oauth
+      # Durable kill-switch state — survives container recreation/restart so the
+      # sticky-off latch and the TOFU box_id pin persist across updates.
+      - killswitch_state:/var/lib/brain-killswitch
+      # READ-ONLY view of postgres's data volume so the app can statfs the EXACT
+      # filesystem postgres writes to (the write-shed above). Same named
+      # volume postgres mounts rw at /var/lib/postgresql/data; :ro adds no write
+      # authority the app doesn't already have via brain_owner SQL.
+      - pgdata:/var/lib/brain-pgdata:ro
+      # READ-ONLY view of the pgBackRest repo so the heartbeat can report WHEN the
+      # last full backup completed (the scheduler's `.brain-last-full` stamp).
+      # Without it the control-plane console (if you run one) can show a box as healthy and up to date
+      # while it has silently taken no backup for weeks — "did it update?" and
+      # "are backups working?" are independent questions. :ro because the app has
+      # no business writing here; the backup sidecar owns the repo.
+      - pgbackrest_repo:/var/lib/brain-pgbackrest:ro
+    # No `ports:` — the box is reachable only via caddy on the private network.
+    networks: [brain]
+
+  # ---------------------------------------------------------------- postgres
+  # Postgres *is* the brain. Initialized with the PG17 builtin C.UTF-8
+  # locale to match test/src/support/pg-harness.ts (version-stable,
+  # OS-independent collation). WAL archiving + pgBackRest config are mounted in;
+  # see deploy/postgres/postgresql.conf and deploy/pgbackrest/pgbackrest.conf.
+  postgres:
+    # Stock postgres:17 + one fix: the WAL archive dir is pre-created owned by the
+    # `postgres` user, so a FRESH pgwal_archive volume is writable and archiving
+    # doesn't silently fail on a new box (see deploy/postgres/Dockerfile).
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    image: ${BRAIN_POSTGRES_IMAGE:-brain/postgres:local}
+    logging: *log-default
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set in .env}
+      POSTGRES_DB: ${BRAIN_DB:-brain}
+      # Match pg-harness.ts exactly: builtin locale provider, C.UTF-8.
+      POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8 --encoding=UTF8"
+    volumes:
+      # Same-disk layout by design: PGDATA, the WAL archive, and the
+      # pgBackRest local repo all live on the one data volume — no separate WAL
+      # volume. Whole-volume loss is bounded by your platform's volume snapshots.
+      - pgdata:/var/lib/postgresql/data
+      - pgwal_archive:/var/lib/postgresql/archive
+      - pgbackrest_repo:/var/lib/pgbackrest
+      # The unix socket dir, SHARED with the `backup` sidecar. pgBackRest has no
+      # TCP option for the local cluster — it reaches Postgres over the socket —
+      # so a second container cannot run `stanza-create`/`backup` without this.
+      - pgsocket:/var/run/postgresql
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${BRAIN_DB:-brain}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    # Not exposed to the host: only `app` (and local pgBackRest) reach it.
+    networks: [brain]
+
+  # ---------------------------------------------------------------- backup (pgBackRest scheduler)
+  # The box's whole-database backups. Runs the SAME image as postgres (so the
+  # pgbackrest binary, the `postgres` uid and PGDATA's layout are identical) with
+  # the repo, PGDATA and the postgres socket mounted in, and executes
+  # deploy/postgres/backup-scheduler.sh: idempotent stanza bootstrap → a FULL
+  # every 12h → `expire` every cycle → a repo budget of 20% of the volume.
+  #
+  # Why a compose SIDECAR and not host cron or the updater:
+  #   - host cron is installed by install.sh, which only ever runs at INSTALL
+  #     time, so it would never reach the boxes already in the field;
+  #   - the updater must stay free to converge a box that is mid-incident, and
+  #     a backup that hangs must not hold up a release.
+  #   A compose service ships with the bundle, converges on the next release
+  #   like everything else, and is restarted by docker if it ever dies.
+  #
+  # It MUST NEVER EXIT. `docker compose up -d --wait <services>` is how the
+  # updater applies a release; a sidecar that exits non-zero fails that command,
+  # which fails the apply, which after three attempts LATCHES the updater and
+  # silently stops the box updating forever. Hence: no
+  # healthcheck (a failing one would fail --wait just as hard), a script that
+  # only ever warns, and the shell guard below so that even an image WITHOUT the
+  # scheduler (a box mid-transition) idles instead of crash-looping.
+  backup:
+    # Same build + same image tag as `postgres` above: in prod both resolve to
+    # the bundle's digest-pinned image; locally the shared `build:` is what makes
+    # `docker compose up` work at all (without it compose would try to PULL the
+    # not-yet-built `brain/postgres:local` for this service).
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    image: ${BRAIN_POSTGRES_IMAGE:-brain/postgres:local}
+    logging: *log-default
+    restart: unless-stopped
+    # NOTE: deliberately NO `user: postgres`. The container starts as root so it
+    # can heal the `pgbackrest_repo` volume's ownership ONCE — that volume has
+    # been declared here since before the image created /var/lib/pgbackrest, so
+    # on every box already in the field Docker created its mountpoint ROOT-owned
+    # and neither postgres's archive-push nor this sidecar could write to it
+    # (the pgwal_archive incident, exactly). brain-backup.sh does the chown and
+    # then re-execs itself under `gosu postgres`, so nothing pgBackRest does ever
+    # runs as root. A RAW `pgbackrest` invocation through this service must pass
+    # `--user postgres` itself (the runbooks do).
+    depends_on:
+      - postgres
+    command:
+      - sh
+      - -c
+      - |
+        if [ -x /usr/local/bin/brain-backup.sh ]; then
+          exec /usr/local/bin/brain-backup.sh loop
+        fi
+        echo "[brain-backup] this postgres image has no scheduler (pre-backups image) — idling instead of crash-looping; the next release brings it"
+        while true; do sleep 3600; done
+    environment:
+      # Cadence + retention. 12h × 4 fulls ⇒ a ~48h PITR window. Fulls are cheap
+      # (the database is tens of MB); RETAINED WAL is the entire cost, so a
+      # short full cadence is what keeps the repo small.
+      BRAIN_BACKUP_INTERVAL_HOURS: ${BRAIN_BACKUP_INTERVAL_HOURS:-12}
+      BRAIN_BACKUP_RETENTION_FULL: ${BRAIN_BACKUP_RETENTION_FULL:-4}
+      # Repo budget as a percent of the volume, computed at runtime — 20% is
+      # ~10 GiB on a 50 G box and ~16 GiB on an 80 G one.
+      BRAIN_BACKUP_REPO_BUDGET_PCT: ${BRAIN_BACKUP_REPO_BUDGET_PCT:-20}
+      BRAIN_BACKUP_MIN_FREE_MB: ${BRAIN_BACKUP_MIN_FREE_MB:-2048}
+      BRAIN_BACKUP_POLL_SECONDS: ${BRAIN_BACKUP_POLL_SECONDS:-300}
+      # THE SAME value the app's read-only write-shed uses (see `app` above).
+      # One knob, one meaning: when the volume is full enough that the box is
+      # refusing content writes, the scheduler refuses to add backups to it.
+      BRAIN_WRITE_SHED_PCT: ${BRAIN_WRITE_SHED_PCT:-90}
+    volumes:
+      # PGDATA: pgBackRest reads the cluster's files directly for a physical
+      # backup. Read-WRITE because `pgbackrest restore` (an explicit operator
+      # command, see docs/runbooks/pitr.md) runs through this service — the
+      # scheduler itself only ever reads.
+      - pgdata:/var/lib/postgresql/data
+      - pgbackrest_repo:/var/lib/pgbackrest
+      - pgsocket:/var/run/postgresql
+      - ./pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks: [brain]
+
+  # ---------------------------------------------------------------- migrate (one-off)
+  # `docker compose --profile tools run --rm migrate` — creates roles, runs the
+  # infra migrations, reports drift, and (if BRAIN_BOOTSTRAP_OWNER_NAME is set)
+  # does the one-time first-owner bootstrap, printing OWNER_TOKEN once.
+  # profiles:[tools] keeps it out of the default `up`.
+  migrate:
+    image: ${BRAIN_IMAGE:-brain/box:local}
+    logging: *log-default
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node", "dist/migrate.js"]
+    environment:
+      BRAIN_DB: ${BRAIN_DB:-brain}
+      BRAIN_SUPERUSER_DATABASE_URL: ${BRAIN_SUPERUSER_DATABASE_URL:?set in .env}
+      BRAIN_OWNER_DATABASE_URL: ${BRAIN_OWNER_DATABASE_URL:?set in .env}
+      BRAIN_APP_DATABASE_URL: ${BRAIN_APP_DATABASE_URL:?set in .env}
+      BRAIN_OWNER_PASSWORD: ${BRAIN_OWNER_PASSWORD:?set in .env}
+      BRAIN_APP_PASSWORD: ${BRAIN_APP_PASSWORD:?set in .env}
+      BRAIN_EXTERNAL_PASSWORD: ${BRAIN_EXTERNAL_PASSWORD:?set in .env}
+      BRAIN_BOOTSTRAP_OWNER_NAME: ${BRAIN_BOOTSTRAP_OWNER_NAME:-}
+      BRAIN_BOOTSTRAP_OWNER_EMAIL: ${BRAIN_BOOTSTRAP_OWNER_EMAIL:-}
+    networks: [brain]
+
+  # ---------------------------------------------------------------- reissue-owner-token (break-glass)
+  # `docker compose --profile tools run --rm -e BRAIN_REISSUE_OWNER_EMAIL=<owner> reissue-owner-token`
+  # Mints a fresh OWNER_TOKEN for a single owner locked out BEFORE first
+  # login. Connects as brain_owner ONLY — NO app/superuser URL —
+  # so this capability is host/compose-access-gated, unreachable by the app pool.
+  reissue-owner-token:
+    image: ${BRAIN_IMAGE:-brain/box:local}
+    logging: *log-default
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node", "dist/reissue-owner-token.js"]
+    environment:
+      BRAIN_DB: ${BRAIN_DB:-brain}
+      BRAIN_OWNER_DATABASE_URL: ${BRAIN_OWNER_DATABASE_URL:?set in .env}
+      BRAIN_REISSUE_OWNER_EMAIL: ${BRAIN_REISSUE_OWNER_EMAIL:-}
+    networks: [brain]
+
+  # ---------------------------------------------------------------- updater
+  # The independently-versioned component that polls the booth (~10 min) for
+  # `desired_version`, cosign-verifies the release, pulls the box image BY
+  # DIGEST, runs migrations, recreates `app`, runs a write-canary, and rolls
+  # back to the schema-floor on failure. A separate container so it can
+  # restart `app` without restarting itself. Absent BRAIN_BOOTH_URL (local/dev)
+  # it idles — the topology is real but nothing auto-updates.
+  updater:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.updater
+    image: ${BRAIN_UPDATER_IMAGE:-brain/updater:local}
+    logging: *log-default
+    restart: unless-stopped
+    environment:
+      BRAIN_BOOTH_URL: ${BRAIN_BOOTH_URL:-}
+      BRAIN_TOKEN: ${BRAIN_TOKEN:-}
+      # The box's public domain — reported on every heartbeat so the booth
+      # registry shows the real domain, not a bare IP.
+      BRAIN_DOMAIN: ${BRAIN_DOMAIN:-}
+      # Booth signing key (same value the box uses): verifies the signed
+      # control that carries the operator restart op. Absent → restart ops ignored.
+      BRAIN_BOOTH_PUBLIC_KEY_B64: ${BRAIN_BOOTH_PUBLIC_KEY_B64:-}
+      # first-boot baseline, written by install.sh; ignored once state exists.
+      BRAIN_CURRENT_VERSION: ${BRAIN_CURRENT_VERSION:-}
+      BRAIN_IMAGE_REPO: ${BRAIN_IMAGE_REPO:-ghcr.io/maslow-tech/maslow/box}
+      # Standalone release feed (no booth): "owner/repo" whose GitHub Releases
+      # carry a release.json asset per release. Ignored when BRAIN_BOOTH_URL is
+      # set; leave both empty and the updater idles (local/dev).
+      BRAIN_RELEASES_REPO: ${BRAIN_RELEASES_REPO:-}
+      BRAIN_RELEASE_CHANNEL: ${BRAIN_RELEASE_CHANNEL:-}
+      # Whole-box bundle updates: where the signed release bundle lives. The
+      # updater reconciles EVERY component (configs, caddy, postgres, app,
+      # itself) to the bundle. Set empty to fall back to app-only updates.
+      BRAIN_BUNDLE_REPO: ${BRAIN_BUNDLE_REPO:-ghcr.io/maslow-tech/maslow/bundle}
+      BRAIN_DEPLOY_DIR: ${BRAIN_HOST_DEPLOY_DIR:-/opt/brain/deploy}
+    volumes:
+      # It drives the HOST daemon: the socket is the whole point.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # GHCR auth for cosign. `docker pull` rides the host daemon (host-authed),
+      # but `cosign verify` runs as a process INSIDE this container and makes its
+      # OWN registry calls — so without the host's docker creds it gets 401 on a
+      # PRIVATE registry and every verify fails. Mount them read-only. install.sh
+      # must `docker login ghcr.io` (creating this file) BEFORE `compose up`.
+      - /root/.docker/config.json:/root/.docker/config.json:ro
+      # The deploy dir is mounted AT ITS HOST PATH: `docker compose` inside this
+      # container resolves the compose file's relative bind mounts against the
+      # project directory, and the HOST daemon interprets those paths — so the
+      # container path and host path must be identical.
+      - ${BRAIN_HOST_DEPLOY_DIR:-/opt/brain/deploy}:${BRAIN_HOST_DEPLOY_DIR:-/opt/brain/deploy}
+      - updater_state:/var/lib/brain-updater
+    networks: [brain]
+
+networks:
+  edge: {}
+  brain:
+    internal: false # app needs egress to the booth; tighten with your platform firewall
+
+volumes:
+  oauth_state: {}
+  killswitch_state: {}
+  updater_state: {}
+  pgdata: {}
+  # Vestigial since 2026-07-29: the legacy `cp` archive_command wrote here.
+  # Archiving now goes through pgBackRest into `pgbackrest_repo`. The mount is
+  # KEPT (removing it from compose would not delete a single byte anyway, and a
+  # box that still has July's segments in it needs an operator to reclaim them
+  # deliberately — see docs/runbooks/disk-and-growth.md).
+  pgwal_archive: {}
+  pgbackrest_repo: {}
+  # Postgres's unix socket dir, shared with the `backup` sidecar.
+  pgsocket: {}
+  caddy_data: {}
+  caddy_config: {}

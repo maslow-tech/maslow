@@ -1,0 +1,12 @@
+# Keep the build context clean so `pnpm install --frozen-lockfile` runs fresh
+# (a copied-in node_modules makes pnpm abort on purge without a TTY).
+**/node_modules
+**/dist
+**/.next
+**/coverage
+.git
+.github
+.claude
+**/*.log
+**/.DS_Store
+.vitest

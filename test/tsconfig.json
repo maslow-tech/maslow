@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    // allows importing the standalone dev backfill scripts under apps/box/dev
+    // (plain JS .mjs, not compiled) from the unit tests — checkJs stays off, so
+    // the module resolves as `any` without requiring a parallel .d.ts.
+    "allowJs": true
+  },
+  "include": ["src/**/*", "*.config.ts"]
+}

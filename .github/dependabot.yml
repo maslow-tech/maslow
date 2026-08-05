@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # pnpm workspace dependency updates. Grouped so a week's patch/minor bumps
+  # arrive as ONE reviewable PR instead of N, with majors called out separately
+  # (they more often break). Security advisories still open their own PRs
+  # immediately regardless of schedule. The non-blocking `dependency-audit` CI
+  # job (.github/workflows/ci.yml) surfaces current CVE exposure on every PR.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        update-types:
+          - "major"
+
+  # Keep the pinned action versions in the workflows current (they carry their
+  # own supply-chain risk — a compromised action tag runs in CI).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

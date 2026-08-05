@@ -1,0 +1,690 @@
+/* ------------------------------------------------------------------ editor
+   Chrome for the block editor. The PROSE itself is deliberately not styled
+   here: the editor surface carries the `md` class, so it inherits the exact
+   type scale index.css already gives rendered markdown. Editing a body and
+   reading it must not be two different documents.
+
+   Every color below is an existing token, so both skins (strict black & white
+   / aurora) are covered without a new palette. */
+
+.editor-root {
+  position: relative;
+}
+
+.editor-surface {
+  outline: none;
+  min-height: 3em;
+}
+
+.editor-readonly .editor-surface {
+  cursor: default;
+}
+
+/* Placeholder — @tiptap/extension-placeholder marks the empty node. */
+.editor-surface p.is-editor-empty:first-child::before,
+.editor-surface .is-empty.has-focus::before {
+  content: attr(data-placeholder);
+  color: var(--dim);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* --- lists ----------------------------------------------------------------
+   Tailwind's preflight resets `list-style: none` on every ul/ol, so a bulleted
+   or numbered list authored via the slash menu would render as a bare indent.
+   Restore real markers on the editor's own bullet/ordered lists (task lists,
+   below, keep their checkbox and opt out). */
+.editor-surface ul:not([data-type="taskList"]),
+.editor-surface ol {
+  padding-left: 1.5em;
+}
+.editor-surface ul:not([data-type="taskList"]) {
+  list-style: disc;
+}
+.editor-surface ul:not([data-type="taskList"]) ul {
+  list-style: circle;
+}
+.editor-surface ol {
+  list-style: decimal;
+}
+.editor-surface li {
+  margin: 0.15em 0;
+}
+.editor-surface li::marker {
+  color: var(--dim);
+}
+
+/* --- task lists -----------------------------------------------------------
+   TipTap renders a taskList as ul > li > (label > input, div). The marker has
+   to go or the checkbox sits next to a bullet. */
+.editor-surface ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.15em;
+}
+.editor-surface ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.editor-surface ul[data-type="taskList"] li > label {
+  flex: 0 0 auto;
+  margin-top: 0.28em;
+  user-select: none;
+}
+.editor-surface ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.editor-surface ul[data-type="taskList"] li > div > p {
+  margin: 0;
+}
+.editor-surface ul[data-type="taskList"] input[type="checkbox"] {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+.editor-surface ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: var(--mut);
+  text-decoration: line-through;
+}
+
+/* --- selection ------------------------------------------------------------ */
+.editor-surface .ProseMirror-selectednode {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.editor-surface hr.ProseMirror-selectednode {
+  outline: none;
+  border-top-color: var(--brand);
+}
+
+/* --- drag handle ---------------------------------------------------------- */
+.editor-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
+  margin-right: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  cursor: grab;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease;
+}
+.editor-drag-handle svg {
+  fill: currentColor;
+}
+.editor-root:hover .editor-drag-handle {
+  opacity: 1;
+}
+.editor-drag-handle:hover {
+  background: var(--hover);
+  color: var(--mut);
+}
+.editor-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* --- floating selection toolbar ------------------------------------------- */
+.editor-bubble {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  animation: editor-pop 120ms cubic-bezier(0.215, 0.61, 0.355, 1) both;
+}
+
+.editor-bubble-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 7px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--mut);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color 100ms ease,
+    color 100ms ease;
+}
+.editor-bubble-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.editor-bubble-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--ink-strong);
+}
+.editor-bubble-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -1px;
+}
+
+.editor-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.editor-link-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 4px;
+}
+.editor-link-input {
+  width: 200px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.editor-link-input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+/* --- slash command menu ---------------------------------------------------
+   Positioned against .editor-root, which is the caret's offset parent. */
+.editor-slash {
+  position: absolute;
+  z-index: 40;
+  width: 232px;
+  max-height: 288px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.16);
+  animation: editor-pop 120ms cubic-bezier(0.215, 0.61, 0.355, 1) both;
+}
+
+.editor-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.editor-slash-item.is-active {
+  background: var(--accent-soft);
+}
+
+.editor-slash-hint {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--dim);
+  background: var(--panel2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+
+@keyframes editor-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* index.css already neutralizes animation globally under reduce; this makes
+   the editor's own chrome honor it even if these styles are loaded alone. */
+@media (prefers-reduced-motion: reduce) {
+  .editor-bubble,
+  .editor-slash {
+    animation: none;
+  }
+  .editor-drag-handle,
+  .editor-bubble-btn {
+    transition: none;
+  }
+}
+
+/* --- touch: the docked formatting bar -------------------------------------
+   A phone hides the bottom ~45% of the layout viewport behind the keyboard,
+   and `position: fixed` is laid out against the LAYOUT viewport — so anything
+   at `bottom: 0` is behind the keyboard, not above it. BlockEditor measures the
+   difference with visualViewport and publishes it as `--editor-kb-inset`;
+   every docked surface is positioned off the one expression below.
+
+   With no keyboard up (external keyboard, or a tablet) the inset is 0 and the
+   bar falls back to sitting above the phone shell's bottom bar + home
+   indicator, which is where the rest of the app's chrome lives. */
+.editor-root {
+  --editor-dock-bottom: max(
+    var(--editor-kb-inset, 0px),
+    calc(56px + env(safe-area-inset-bottom, 0px))
+  );
+  --editor-dock-h: 44px;
+}
+
+.editor-toolbar {
+  position: fixed;
+  right: 0;
+  bottom: var(--editor-dock-bottom);
+  left: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--editor-dock-h);
+  padding: 0 6px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 20px rgb(0 0 0 / 0.12);
+}
+
+/* More controls than a 390px screen fits: the row scrolls sideways rather than
+   dropping any of them, and the scrollbar itself is chrome nobody taps. */
+.editor-toolbar-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.editor-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* 44px is the thumb floor; the bar is 44 tall, so its buttons fill it. */
+.editor-toolbar .editor-bubble-btn {
+  flex: 0 0 auto;
+  min-width: 42px;
+  height: 40px;
+  font-size: 14px;
+}
+
+.editor-toolbar-done {
+  flex: 0 0 auto;
+  min-width: 56px;
+  height: 40px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--line-soft);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.editor-link-form-docked {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 0;
+}
+.editor-link-form-docked .editor-link-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  /* Under 16px iOS zooms the page in on focus and never zooms back out. */
+  font-size: 16px;
+}
+
+/* The block sheet, and (via the coarse-pointer rules below) the slash menu and
+   the [[link]] popover, all sit directly on top of the bar. Capped in height
+   and scrollable: a nine-item palette must not become the whole screen. */
+.editor-sheet {
+  position: fixed;
+  right: 0;
+  bottom: calc(var(--editor-dock-bottom) + var(--editor-dock-h));
+  left: 0;
+  z-index: 44;
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 24px rgb(0 0 0 / 0.14);
+}
+
+.editor-sheet-row {
+  display: flex;
+  gap: 4px;
+}
+.editor-sheet-row .editor-slash-item {
+  justify-content: center;
+  flex: 1 1 0;
+  background: var(--panel2);
+}
+.editor-sheet-danger {
+  color: var(--destructive, #dc2626);
+}
+
+.editor-sheet-label {
+  padding: 8px 8px 2px;
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.editor-sheet .editor-slash-item {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+@media (pointer: coarse) {
+  /* Hover-revealed controls do not exist on a touch screen; the docked bar's
+     block sheet is the replacement, so the handle is not merely hidden. */
+  .editor-drag-handle {
+    display: none;
+  }
+
+  /* The slash menu and the [[link]] popover are absolutely positioned at the
+     caret, which on a phone is routinely the part of the screen the keyboard
+     is covering. Docked instead — full width, above the bar, scrollable.
+     `!important` beats the inline top/left the caret maths writes; those are
+     the only inline styles either popover carries. */
+  .editor-touch-docked .editor-slash {
+    position: fixed;
+    top: auto !important;
+    right: 0;
+    bottom: calc(var(--editor-dock-bottom) + var(--editor-dock-h));
+    left: 0 !important;
+    width: auto;
+    max-height: 42vh;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+  .editor-touch-docked .editor-slash-item {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  /* Long-press belongs to iOS: it is how you select a word and reach Cut /
+     Copy / Look Up. We add no competing long-press gesture (the drag handle is
+     gone above), and nothing here may suppress the callout on prose — text
+     stays selectable, and only the CHROME opts out of being long-pressed. */
+  .editor-surface {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+  .editor-toolbar,
+  .editor-sheet {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    /* Taps land as taps: no 300ms wait, no double-tap zoom on a toggle. */
+    touch-action: manipulation;
+  }
+}
+
+/* --- collaboration carets -------------------------------------------------
+   THE PRESENCE PALETTE, PER SKIN.
+
+   The relay stamps a slot (`presence-3`, `presence-agent`), never an ink — the
+   server has no business choosing a colour for two skins it cannot see. These
+   are the same values `PresenceRail.PRESENCE_INK` uses for the rail avatars,
+   and AgentCursor.test.tsx asserts the two agree slot by slot, so a change in
+   one file cannot silently drift from the other.
+
+   Slot 0 is the agent's, reserved: graphite, so the machine reads as machine
+   and is never mistaken for a person. */
+:root {
+  --presence-agent: #52525b;
+  --presence-1: #2563eb;
+  --presence-2: #059669;
+  --presence-3: #d97706;
+  --presence-4: #db2777;
+  --presence-5: #7c3aed;
+  --presence-6: #0891b2;
+  --presence-7: #e11d48;
+  --presence-8: #4d7c0f;
+
+  /* The readable foreground for a name flag drawn ON that ink — chosen per slot
+     by the ink's luminance (black on the mid-tone inks, white on the dark ones)
+     so the peer's name clears WCAG AA at ~11px. Hardcoding #fff failed on the
+     lighter slots; this is the companion the label reads via `--collab-fg`. */
+  --presence-agent-on: #ffffff;
+  --presence-1-on: #ffffff;
+  --presence-2-on: #000000;
+  --presence-3-on: #000000;
+  --presence-4-on: #ffffff;
+  --presence-5-on: #ffffff;
+  --presence-6-on: #000000;
+  --presence-7-on: #ffffff;
+  --presence-8-on: #ffffff;
+}
+
+:root[data-theme="dark"] {
+  --presence-agent: #8b8b98;
+  --presence-1: #4aa8ff;
+  --presence-2: #34d399;
+  --presence-3: #fbbf24;
+  --presence-4: #f472b6;
+  --presence-5: #a78bfa;
+  --presence-6: #22d3ee;
+  --presence-7: #fb7185;
+  --presence-8: #a3e635;
+
+  /* Every dark-skin presence ink is a bright — black text is the only one that
+     clears AA on all of them (white-on-lime / white-on-amber are ~1.5:1). */
+  --presence-agent-on: #000000;
+  --presence-1-on: #000000;
+  --presence-2-on: #000000;
+  --presence-3-on: #000000;
+  --presence-4-on: #000000;
+  --presence-5-on: #000000;
+  --presence-6-on: #000000;
+  --presence-7-on: #000000;
+  --presence-8-on: #000000;
+}
+
+/* One remote caret. `--collab-ink` is set inline by AgentCursor.buildCollabCaret
+   from the stamped slot; an unstamped payload lands on `--dim` and gets no
+   label at all. */
+.collab-caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 1.5px solid var(--collab-ink, var(--dim));
+  border-right: none;
+  word-break: normal;
+  pointer-events: none;
+}
+
+.collab-caret-label {
+  position: absolute;
+  top: -1.35em;
+  left: -1.5px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 14rem;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: var(--collab-ink, var(--dim));
+  /* Foreground chosen per-ink for contrast (set alongside --collab-ink by
+     buildCollabCaret); #fff is only the fallback for an unstamped caret, which
+     carries no label anyway. */
+  color: var(--collab-fg, #fff);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+  /* A person is at their keyboard for hours: the label says who, then gets out
+     of the way. `forwards` keeps it out of the way — ProseMirror reuses the
+     keyed widget DOM, so the label does not re-appear on every move; the caret
+     itself, which is the part you need while reading, never fades. */
+  animation: collab-caret-label-fade 220ms ease-out 2400ms forwards;
+}
+
+/* An agent is here for about a second and a half, and knowing WHOSE robot it
+   is matters for exactly that long. */
+.collab-caret-label[data-persistent="true"] {
+  animation: none;
+}
+
+.collab-caret-glyph {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+
+/* The persistent human identity dot: the initial in the peer's hue, sitting
+   under the name label so it is what remains once the name has faded. It never
+   fades — it is how you tell whose caret and selection this is at rest. */
+.collab-caret-dot {
+  position: absolute;
+  top: -1.35em;
+  left: -1.5px;
+  z-index: 19;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--collab-ink, var(--dim));
+  color: var(--collab-fg, #fff);
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
+}
+
+.collab-caret-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The band behind a peer's selection. It has to read as THAT collaborator's
+   colour, not as the browser's own gray selection — otherwise you cannot tell a
+   remote selection from your own. So the fill is tinted enough to register as a
+   hue and it carries a solid left accent in the full ink, marking where the
+   collaborator's selection begins. */
+.collab-selection {
+  background-color: color-mix(in srgb, var(--collab-ink, var(--dim)) 30%, transparent);
+  box-shadow: inset 2px 0 0 -0.5px var(--collab-ink, var(--dim));
+}
+
+/* The afterimage of an agent's write: the range it just rewrote, decaying over
+   AGENT_TRAIL_MS (lib/collab.ts). The plugin removes the decoration when the
+   mark expires; the animation is what makes it *decay* rather than blink out.
+   It is only ever created when motion is welcome — see AgentTrail. */
+.collab-trail {
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--collab-ink, var(--dim)) 20%, transparent);
+  animation: collab-trail-fade 1500ms linear forwards;
+}
+
+@keyframes collab-caret-label-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes collab-trail-fade {
+  from {
+    background-color: color-mix(in srgb, var(--collab-ink, var(--dim)) 20%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* Presence on a narrow column.
+   A 390px screen is roughly 40 characters wide, so a peer's label can be wider
+   than the paragraph it sits over — and two peers in one sentence stack their
+   labels into an unreadable pile. Three changes, all legibility and none of
+   them colour: the label is capped against the VIEWPORT (not a fixed rem, which
+   would still overflow), it never wraps to a second line over the prose, and
+   the caret itself gets a wider stroke because it, not the label, is what tells
+   you where someone is once the label has faded. */
+@media (max-width: 767px) {
+  .collab-caret {
+    border-left-width: 2px;
+  }
+  .collab-caret-label {
+    max-width: min(14rem, 62vw);
+    font-size: 11px;
+    padding: 1px 5px;
+    /* Keep the per-ink foreground here too — the bump to 11px does not change
+       which colour is legible on the ink. */
+    color: var(--collab-fg, #fff);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The trail is not created at all under reduce (AgentTrail asks the OS before
+     it marks anything); this is the floor for a stylesheet loaded alone.
+
+     A human's name label jumps STRAIGHT to the fade's end state (hidden) rather
+     than merely dropping the animation: `animation: none` alone would freeze it
+     fully open, permanently covering the identity dot underneath — reduced-
+     motion readers would be the only ones stuck with full-name flags over their
+     prose forever. The dot (same position, z-index 19) is the design's resting
+     state and needs no motion to get there, so reduce lands on it directly:
+     identity is never lost, and no name animates in or out. */
+  .collab-caret-label {
+    animation: none;
+    opacity: 0;
+  }
+  /* Persistent labels (an agent's glyph+name — there is no dot beneath them)
+     never fade in any mode; keep them visible under reduce too. */
+  .collab-caret-label[data-persistent="true"] {
+    opacity: 1;
+  }
+  .collab-trail {
+    animation: none;
+  }
+}

@@ -1,0 +1,46 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+*.tsbuildinfo
+.next/
+out/
+
+# test / coverage
+coverage/
+.vitest/
+test-results/
+playwright-report/
+.playwright/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# os
+.DS_Store
+
+# logs
+*.log
+npm-debug.log*
+
+# agent state
+.claude/
+
+# updater working dirs inside a local deploy dir
+deploy/.rollback-snapshot/
+deploy/.bundle-staging/
+apps/box/dev/dev-tokens.json
+.shots/
+
+# baked retrieval models — fetched by deploy/fetch-models.sh, never committed
+deploy/models/
+
+# python bytecode (vendored libs regenerate it at import)
+__pycache__/
+*.pyc
