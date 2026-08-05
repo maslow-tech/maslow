@@ -1,14 +1,21 @@
 name: codex-review
 
-# AI code review on every PR, powered by the Codex CLI (gpt-5.6-luna).
-# The reviewer gets the PR description, the full repo checkout, and a
-# workspace sandbox where the toolchain is already installed, so it can run
-# the typechecker or a targeted test to check a suspicion instead of
-# guessing. It posts one sticky comment per PR and updates it on new pushes.
+# AI code review on every PR, powered by the Codex CLI.
+#
+# Two jobs, two models:
+#   review (gpt-5.6-sol) — reads the PR description + full repo, may run the
+#     typechecker or targeted unit tests to check a suspicion, and posts one
+#     sticky comment. Three verdicts: LGTM, "needs work" (advisory), and
+#     DO NOT MERGE (reserved for defensible correctness/security/data-loss/
+#     update-safety defects). DO NOT MERGE fails this check — and `review`
+#     is in the branch ruleset's required checks, so it blocks the merge.
+#   fix (gpt-5.6-luna) — runs only on DO NOT MERGE: takes over the PR head,
+#     implements a minimal fix, verifies it, and pushes the result to a
+#     `codex-fix/pr-<n>` branch as a suggested commit, linked from the PR.
 #
 # Auth comes from the CODEX_AUTH repository secret (a Codex auth.json).
-# Fork PRs don't receive secrets, so the job skips itself there; the human
-# review bar in CONTRIBUTING.md is unaffected either way.
+# Fork PRs don't receive secrets and dependabot gets its own secrets
+# context, so both skip; a skipped required check does not block merging.
 
 on:
   pull_request:
@@ -24,14 +31,14 @@ concurrency:
 
 jobs:
   review:
-    # Same-repo PRs only: forks have no secrets, dependabot gets its own
-    # secrets context (which lacks CODEX_AUTH), and a draft isn't ready.
     if: >
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -97,23 +104,49 @@ jobs:
             echo "Write your review as GitHub-flavored markdown: a one-paragraph"
             echo "summary, then findings ordered by severity with file:line references."
             echo "If the change looks good, say so briefly instead of inventing nits."
-            echo "End with exactly one line: 'Verdict: LGTM' or 'Verdict: needs work'."
+            echo "End with exactly one line, choosing the strongest verdict you can"
+            echo "defend:"
+            echo "  'Verdict: LGTM' — no findings worth acting on."
+            echo "  'Verdict: needs work' — advisory findings; merging is still sane."
+            echo "  'Verdict: DO NOT MERGE' — ONLY for a concrete correctness,"
+            echo "  security, data-loss, or update-safety defect you can state as a"
+            echo "  failure scenario. This verdict physically blocks the merge, so"
+            echo "  never use it for style, taste, or hypotheticals."
           } > /tmp/prompt.txt
-          codex exec -m gpt-5.6-luna --sandbox danger-full-access - < /tmp/prompt.txt \
+          codex exec -m gpt-5.6-sol --sandbox danger-full-access - < /tmp/prompt.txt \
             | tee /tmp/codex-raw.txt
-          # The CLI streams progress; the final answer is the last block. Keep
-          # everything after the last '"codex"'-style separator if present,
-          # otherwise the whole output.
           cp /tmp/codex-raw.txt /tmp/review.md
+
+      - name: Parse verdict
+        id: verdict
+        run: |
+          set -euo pipefail
+          if grep -qi 'Verdict: DO NOT MERGE' /tmp/review.md; then v=block
+          elif grep -qi 'Verdict: needs work' /tmp/review.md; then v=advisory
+          else v=lgtm; fi
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+          echo "verdict: $v"
 
       - name: Post sticky PR comment
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
         run: |
           set -euo pipefail
           MARKER='<!-- codex-review -->'
-          { echo "$MARKER"; echo "## Codex review (gpt-5.6-luna)"; echo; cat /tmp/review.md; } > /tmp/comment.md
+          {
+            echo "$MARKER"
+            echo "## Codex review (gpt-5.6-sol)"
+            if [ "$VERDICT" = block ]; then
+              echo
+              echo "> [!CAUTION]"
+              echo "> This verdict blocks the merge. A gpt-5.6-luna fixer session is"
+              echo "> being spawned to draft a suggested fix."
+            fi
+            echo
+            cat /tmp/review.md
+          } > /tmp/comment.md
           existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -1)
           if [ -n "$existing" ]; then
@@ -122,3 +155,137 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@/tmp/comment.md > /dev/null
           fi
           echo "review posted"
+
+      - name: Save review for the fixer
+        if: steps.verdict.outputs.verdict == 'block'
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-review-${{ github.event.pull_request.number }}
+          path: /tmp/review.md
+          retention-days: 3
+
+      # Last, so the comment + artifact land even when the verdict blocks.
+      - name: Enforce verdict
+        if: steps.verdict.outputs.verdict == 'block'
+        run: |
+          echo "DO NOT MERGE verdict — failing the required check." >&2
+          exit 1
+
+  # Spawned only when the review blocks: take over the branch, fix the
+  # defect, verify, and push the result as a suggested commit. Never touches
+  # the contributor's branch directly — the fix lands on codex-fix/pr-<n>.
+  fix:
+    needs: review
+    if: always() && needs.review.outputs.verdict == 'block'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - uses: actions/download-artifact@v7
+        with:
+          name: codex-review-${{ github.event.pull_request.number }}
+          path: /tmp/review
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+      - name: Write Codex auth
+        env:
+          CODEX_AUTH: ${{ secrets.CODEX_AUTH }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+
+      - name: Fix the defect
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          {
+            echo "A reviewer blocked PR #$PR_NUMBER (\"$PR_TITLE\") in this repo"
+            echo "(maslow: a self-hosted team-memory appliance). You are checked out"
+            echo "on the PR's head commit. Your job: implement the MINIMAL fix for"
+            echo "the blocking defect(s) below, staying inside the PR's intent —"
+            echo "do not redesign, do not fix unrelated nits."
+            echo
+            echo "--- the blocking review ---"
+            cat /tmp/review/review.md
+            echo "--- end review ---"
+            echo
+            echo "Rules: edit the working tree only; do NOT run git commit/push"
+            echo "(the workflow handles that). Verify your fix with 'pnpm typecheck'"
+            echo "and the narrowest relevant 'pnpm --filter <pkg> test:unit' run."
+            echo "If the defect genuinely cannot be fixed within the PR's intent,"
+            echo "write SUGGEST-CLOSE and a one-paragraph reason to the file"
+            echo "/tmp/no-fix.md and change nothing."
+          } > /tmp/fix-prompt.txt
+          codex exec -m gpt-5.6-luna --sandbox danger-full-access - < /tmp/fix-prompt.txt \
+            | tee /tmp/fix-log.txt
+
+      - name: Push suggested commit + comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- codex-fix -->'
+          post_comment() {
+            existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -1)
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -F body=@/tmp/fix-comment.md > /dev/null
+            else
+              gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@/tmp/fix-comment.md > /dev/null
+            fi
+          }
+          if [ -f /tmp/no-fix.md ]; then
+            { echo "$MARKER"; echo "## Codex fixer (gpt-5.6-luna)"; echo
+              echo "The fixer judged this unfixable within the PR's intent:"; echo
+              cat /tmp/no-fix.md; } > /tmp/fix-comment.md
+            post_comment; echo "no-fix comment posted"; exit 0
+          fi
+          if git diff --quiet && git diff --cached --quiet; then
+            { echo "$MARKER"; echo "## Codex fixer (gpt-5.6-luna)"; echo
+              echo "The fixer session produced no change. See the workflow log."; } > /tmp/fix-comment.md
+            post_comment; echo "empty-fix comment posted"; exit 0
+          fi
+          BRANCH="codex-fix/pr-${PR_NUMBER}"
+          git config user.name "codex-fixer[bot]"
+          git config user.email "codex-fixer@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "fix: address the blocking review on PR #${PR_NUMBER}" \
+            -m "Drafted by the codex fixer (gpt-5.6-luna) from the blocking review's findings. Review before adopting."
+          git push -f origin "$BRANCH"
+          { echo "$MARKER"; echo "## Codex fixer (gpt-5.6-luna)"; echo
+            echo "Suggested fix pushed to [\`$BRANCH\`](https://github.com/${GITHUB_REPOSITORY}/tree/$BRANCH)."
+            echo
+            echo "Adopt it with:"
+            echo '```bash'
+            echo "git fetch origin $BRANCH"
+            echo "git cherry-pick \$(git rev-parse origin/$BRANCH)   # onto $HEAD_REF"
+            echo '```'
+            echo
+            echo "Pushing it to this PR re-runs the review; a clean verdict unblocks the merge."
+            echo
+            echo "<details><summary>What the fixer changed</summary>"
+            echo; echo '```'; git show --stat HEAD | head -30; echo '```'; echo "</details>"
+          } > /tmp/fix-comment.md
+          post_comment
+          echo "suggested commit pushed + comment posted"
