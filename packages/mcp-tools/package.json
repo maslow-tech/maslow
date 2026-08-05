@@ -28,6 +28,6 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10"
+    "@types/pg": "^8.20.3"
   }
 }

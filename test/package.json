@@ -18,14 +18,14 @@
     "@brain/schema": "workspace:*",
     "@brain/shared": "workspace:*",
     "@brain/updater": "workspace:*",
-    "hono": "^4.12.32",
+    "hono": "^4.12.33",
     "just-bash": "^3.2.0",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@hocuspocus/provider": "^2.15.3",
     "@hono/node-server": "1.13.7",
-    "@types/pg": "^8.11.10",
+    "@types/pg": "^8.20.3",
     "@types/ws": "^8.5.13",
     "testcontainers": "^10.16.0",
     "ws": "^8.18.0",
