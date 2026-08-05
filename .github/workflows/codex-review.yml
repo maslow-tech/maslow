@@ -42,7 +42,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Build once so `pnpm typecheck` / `pnpm test:unit` are cheap for the
-      # reviewer to invoke inside the sandbox.
+      # reviewer to invoke. The CLI runs with full access: the ephemeral CI
+      # runner is itself the sandbox (codex Landlock cannot nest inside it).
       - run: pnpm -r build
 
       - name: Install Codex CLI
@@ -96,7 +97,7 @@ jobs:
             echo "If the change looks good, say so briefly instead of inventing nits."
             echo "End with exactly one line: 'Verdict: LGTM' or 'Verdict: needs work'."
           } > /tmp/prompt.txt
-          codex exec -m gpt-5.6-luna --sandbox workspace-write - < /tmp/prompt.txt \
+          codex exec -m gpt-5.6-luna --sandbox danger-full-access - < /tmp/prompt.txt \
             | tee /tmp/codex-raw.txt
           # The CLI streams progress; the final answer is the last block. Keep
           # everything after the last '"codex"'-style separator if present,
