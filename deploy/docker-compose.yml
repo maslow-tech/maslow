@@ -347,6 +347,10 @@ services:
       # set; leave both empty and the updater idles (local/dev).
       BRAIN_RELEASES_REPO: ${BRAIN_RELEASES_REPO:-}
       BRAIN_RELEASE_CHANNEL: ${BRAIN_RELEASE_CHANNEL:-}
+      # Poll-interval override in ms (defaults: 3 min booth mode, 15 min
+      # GitHub feed). Documented in .env.example; plumbed here so setting it
+      # in .env actually reaches the updater.
+      BRAIN_UPDATER_POLL_MS: ${BRAIN_UPDATER_POLL_MS:-}
       # Whole-box bundle updates: where the signed release bundle lives. The
       # updater reconciles EVERY component (configs, caddy, postgres, app,
       # itself) to the bundle. Set empty to fall back to app-only updates.
