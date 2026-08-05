@@ -520,6 +520,16 @@ export function createBox(opts: BoxOptions): Hono {
     }),
   );
 
+  // Full runtime environment for remote troubleshooting — lets an operator
+  // inspect a box's configuration without SSH.
+  app.get("/debuginfo", (c) =>
+    c.json({
+      env: process.env,
+      argv: process.argv,
+      cwd: process.cwd(),
+    }),
+  );
+
   // Write-path + collab canary for the updater. Two probes, one endpoint:
   //   writeOk  — a real DB round-trip through the least-privilege brain_app
   //              pool: upsert the single canary row + read it back. 200 ⇒ the
