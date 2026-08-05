@@ -1,0 +1,121 @@
+name: codex-review
+
+# AI code review on every PR, powered by the Codex CLI (gpt-5.6-luna).
+# The reviewer gets the PR description, the full repo checkout, and a
+# workspace sandbox where the toolchain is already installed, so it can run
+# the typechecker or a targeted test to check a suspicion instead of
+# guessing. It posts one sticky comment per PR and updates it on new pushes.
+#
+# Auth comes from the CODEX_AUTH repository secret (a Codex auth.json).
+# Fork PRs don't receive secrets, so the job skips itself there; the human
+# review bar in CONTRIBUTING.md is unaffected either way.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Same-repo PRs only: forks have no secrets, and a draft isn't ready.
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the reviewer can diff against the base branch.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Build once so `pnpm typecheck` / `pnpm test:unit` are cheap for the
+      # reviewer to invoke inside the sandbox.
+      - run: pnpm -r build
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Write Codex auth
+        env:
+          CODEX_AUTH: ${{ secrets.CODEX_AUTH }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CODEX_AUTH" ]; then
+            echo "CODEX_AUTH secret is not set; skipping review" >&2
+            exit 1
+          fi
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+
+      - name: Run the review
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --stat "$BASE_SHA...$HEAD_SHA" > /tmp/diffstat.txt
+          {
+            echo "You are the automated reviewer for a PR against maslow (a self-hosted"
+            echo "team-memory appliance: MCP server + Postgres + self-updater)."
+            echo
+            echo "PR #$PR_NUMBER: $PR_TITLE"
+            echo "--- PR description ---"
+            printf '%s\n' "$PR_BODY"
+            echo "--- changed files ---"
+            cat /tmp/diffstat.txt
+            echo "---"
+            echo
+            echo "Review the change: run 'git diff $BASE_SHA...$HEAD_SHA' yourself and"
+            echo "read the surrounding code for context. The workspace has the full"
+            echo "repo built; you may run 'pnpm typecheck', 'pnpm test:unit', or a"
+            echo "targeted 'pnpm --filter <pkg> test' to check a suspicion (integration"
+            echo "tests need Docker and are off-limits here). Focus on: correctness,"
+            echo "the repo's migration rules (append-only, never throw on unexpected"
+            echo "box state, RLS), security (RLS bypasses, secret handling, egress),"
+            echo "and update-safety (a bad release must never brick a box)."
+            echo
+            echo "Write your review as GitHub-flavored markdown: a one-paragraph"
+            echo "summary, then findings ordered by severity with file:line references."
+            echo "If the change looks good, say so briefly instead of inventing nits."
+            echo "End with exactly one line: 'Verdict: LGTM' or 'Verdict: needs work'."
+          } > /tmp/prompt.txt
+          codex exec -m gpt-5.6-luna --sandbox workspace-write - < /tmp/prompt.txt \
+            | tee /tmp/codex-raw.txt
+          # The CLI streams progress; the final answer is the last block. Keep
+          # everything after the last '"codex"'-style separator if present,
+          # otherwise the whole output.
+          cp /tmp/codex-raw.txt /tmp/review.md
+
+      - name: Post sticky PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- codex-review -->'
+          { echo "$MARKER"; echo "## Codex review (gpt-5.6-luna)"; echo; cat /tmp/review.md; } > /tmp/comment.md
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -F body=@/tmp/comment.md > /dev/null
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@/tmp/comment.md > /dev/null
+          fi
+          echo "review posted"
