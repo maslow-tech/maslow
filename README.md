@@ -1,7 +1,7 @@
 # maslow
 
 [![ci](https://github.com/maslow-tech/maslow/actions/workflows/ci.yml/badge.svg)](https://github.com/maslow-tech/maslow/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 A self-hosted memory appliance for teams that work with AI agents.
 
@@ -107,4 +107,13 @@ Postgres containers.
 
 ## License
 
-[MIT](LICENSE)
+[GNU AGPL-3.0](LICENSE). Copyright (C) 2026 Maslow Technologies.
+
+You can run, study, modify, and redistribute this software. If you modify it
+and let other people use it over a network, AGPL section 13 requires you to
+offer those users the source of your modified version. Running an unmodified
+box for your own team carries no such obligation, and nothing here restricts
+what you do with the data in your brain.
+
+Third-party components keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

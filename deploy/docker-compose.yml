@@ -95,6 +95,9 @@ services:
       # own OAuth authorization server so claude.ai/Desktop can add it in one
       # click (MCP auth). Absent it, only static-bearer / pre-issued JWTs work.
       BRAIN_PUBLIC_URL: ${BRAIN_PUBLIC_URL:-}
+      # Where this build's source lives, served on /boxinfo (AGPL section 13).
+      # Set it when running a modified build; unset points at upstream.
+      BRAIN_SOURCE_URL: ${BRAIN_SOURCE_URL:-}
       # The box's canonical domain (same value caddy serves) — surfaced on
       # /boxinfo and ridden up on heartbeats so the optional control-plane console shows the
       # real name, not the enroll-time hostname.

@@ -47,6 +47,11 @@ must never latch a box.
 Prettier and eslint are enforced by hooks (`pnpm prepare` installs them).
 Comments should state constraints the code cannot express, and skip narration.
 
+## Licensing
+
+This project is licensed under the GNU AGPL-3.0. By opening a pull request you
+agree that your contribution ships under that same license. There is no CLA.
+
 ## Pull requests
 
 Keep PRs focused, and describe the behavior change before the implementation.

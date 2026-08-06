@@ -516,6 +516,12 @@ export function createBox(opts: BoxOptions): Hono {
       version: opts.dashboard?.appVersion ?? process.env.BRAIN_APP_VERSION ?? "dev",
       domain: process.env.BRAIN_DOMAIN ?? null,
       hostname: osHostname(),
+      // AGPL section 13: network users must be able to reach the source of the
+      // version they are talking to. An operator running a MODIFIED box sets
+      // BRAIN_SOURCE_URL to where their fork's source lives; unmodified boxes
+      // point at upstream.
+      source: process.env.BRAIN_SOURCE_URL ?? "https://github.com/maslow-tech/maslow",
+      license: "AGPL-3.0-or-later",
       now: new Date().toISOString(),
     }),
   );
