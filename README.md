@@ -107,7 +107,7 @@ Postgres containers.
 
 ## License
 
-[GNU AGPL-3.0](LICENSE). Copyright (C) 2026 Maslow Technologies.
+[GNU AGPL-3.0](LICENSE). Copyright (C) 2026 Maslow Industries Inc.
 
 You can run, study, modify, and redistribute this software. If you modify it
 and let other people use it over a network, AGPL section 13 requires you to
