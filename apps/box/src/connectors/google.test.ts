@@ -343,6 +343,25 @@ describe("googleDoctrine", () => {
   });
 });
 
+/** Read a message whose only readable part is text/html, and hand back the
+ *  extracted text body. */
+async function htmlBody(html: string): Promise<string> {
+  stubFetch(() => ({
+    status: 200,
+    json: {
+      id: "m1",
+      payload: {
+        mimeType: "text/html",
+        headers: [{ name: "Subject", value: "S" }],
+        body: { data: Buffer.from(html).toString("base64url") },
+      },
+    },
+  }));
+  const r = await gmailRead("tok", "m1");
+  expect(r.successful).toBe(true);
+  return (r as { data: { body: string } }).data.body;
+}
+
 describe("gmail actions (stubbed fetch)", () => {
   it("search lists ids then hydrates headers per hit", async () => {
     const calls = stubFetch((url) => {
@@ -399,6 +418,39 @@ describe("gmail actions (stubbed fetch)", () => {
     expect(r.successful).toBe(true);
     if (!r.successful) return;
     expect((r.data as { body: string }).body).toBe("plain body");
+  });
+
+  it("reads an HTML-only body as text: no markup survives, script/style go with their content", async () => {
+    const body = await htmlBody(
+      "<html><head><style>b{color:red}</style></head><body>" +
+        "<p>Quarterly <b>numbers</b> attached.</p>" +
+        "<script>steal(document.cookie)</script>" +
+        "</body></html>",
+    );
+    expect(body).toContain("Quarterly");
+    expect(body).toContain("numbers");
+    expect(body).not.toContain("color:red");
+    expect(body).not.toContain("steal(");
+    expect(body).not.toMatch(/<[a-zA-Z/][^>]*>/);
+  });
+
+  it("a spliced tag payload cannot survive the strip — one pass is not a strip", async () => {
+    // Each `replace` pass leaves its neighbours adjacent, so a payload built to
+    // be joined by the pass that removes its middle (`<scr` + `ipt>`) walks out
+    // of a chain of passes as live markup. Nothing tag-shaped may come back.
+    const body = await htmlBody(
+      "<scr<script>x</script>ipt>report<sty<style>y</style>le>ok</style>",
+    );
+    expect(body).not.toMatch(/<[a-zA-Z/][^>]*>/);
+    expect(body).toContain("report");
+  });
+
+  it("decodes entities ONCE — `&amp;lt;` is literal text, never a tag", async () => {
+    // Chained `.replace(/&amp;/)` then `.replace(/&lt;/)` decodes twice and
+    // hands back a `<` the sender only ever wrote as escaped text.
+    const body = await htmlBody("<p>&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</p>");
+    expect(body).toContain("&lt;script&gt;");
+    expect(body).not.toContain("<script>");
   });
 
   it("send posts the raw message; 401 teaches reconnect without leaking the token", async () => {

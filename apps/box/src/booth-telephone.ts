@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from "@brain/shared";
 import type { ValidateOutcome } from "./kill-switch-client.js";
 
 /**
@@ -15,7 +16,7 @@ export async function boothValidate(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${boothUrl.replace(/\/+$/, "")}/v1/validate`, {
+    const res = await fetch(`${stripTrailingSlashes(boothUrl)}/v1/validate`, {
       method: "POST",
       headers: { authorization: `Bearer ${brainToken}`, "content-type": "application/json" },
       body: "{}",

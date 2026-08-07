@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { serve } from "@hono/node-server";
 import { Client, Pool } from "pg";
 import { generateDevKeypair, makeDevSigner, Writer } from "@brain/mcp-tools";
+import { stripTrailingSlashes } from "@brain/shared";
 import {
   isArchiverWedged,
   lastFullBackupAt,
@@ -326,7 +327,7 @@ async function main(): Promise<void> {
       const errs = snapshotBoxErrors();
       if (errs.length) body.errors = errs;
       try {
-        const res = await fetch(`${boothUrl.replace(/\/+$/, "")}/v1/heartbeat`, {
+        const res = await fetch(`${stripTrailingSlashes(boothUrl)}/v1/heartbeat`, {
           method: "POST",
           headers: { authorization: `Bearer ${brainToken}`, "content-type": "application/json" },
           body: JSON.stringify(body),

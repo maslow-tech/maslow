@@ -411,6 +411,62 @@ export async function gmailSearch(
   return ok({ query: q, count: messages.length, messages });
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  "#39": "'",
+};
+
+/**
+ * HTML → text, in ONE left-to-right scan.
+ *
+ * A chain of `replace` passes is not a strip: each pass can splice what is left
+ * of its neighbours into a NEW tag (`<scr` + `ipt>` after an inner
+ * `<script></script>` is removed), so a sender chooses how many passes they
+ * survive. The scan drops everything from a `<` to its closing `>` exactly
+ * once — `<script>`/`<style>` take their contents with them — and a `<` with no
+ * `>` after it is left verbatim because nothing can complete it. The result
+ * therefore holds no tag at all, whatever the nesting, and is unchanged if run
+ * again — and on a spliced payload it keeps the same text a browser shows,
+ * rather than whatever the pass order happened to leave behind.
+ */
+function stripHtml(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      out += html.slice(i);
+      break;
+    }
+    out += html.slice(i, lt);
+    const gt = html.indexOf(">", lt + 1);
+    if (gt < 0) {
+      out += html.slice(lt);
+      break;
+    }
+    const tag = html.slice(lt, gt + 1);
+    const raw = tag.endsWith("/>") ? null : /^<\s*(script|style)\b/i.exec(tag);
+    out += " ";
+    i = gt + 1;
+    if (!raw) continue;
+    // Raw-text element: its content is CSS/JS, never readable text.
+    const close = lower.indexOf(`</${raw[1]!.toLowerCase()}`, i);
+    if (close < 0) {
+      i = html.length;
+      continue;
+    }
+    const closeEnd = html.indexOf(">", close);
+    i = closeEnd < 0 ? html.length : closeEnd + 1;
+  }
+  return out;
+}
+
 /** Depth-first hunt for the best readable body part: text/plain preferred,
  *  text/html (tags stripped) as fallback. */
 function extractBody(payload: GmailPart | undefined): string {
@@ -430,14 +486,11 @@ function extractBody(payload: GmailPart | undefined): string {
   if (plain) return plain;
   // ponytail: naive tag strip — enough to read a newsletter; a real HTML-to-text
   // pass only if agents actually complain.
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
+  // Entities decode in ONE pass over the alternation: decoding `&amp;` before
+  // `&lt;` means `&amp;lt;` decodes twice and yields a `<` the sender wrote as
+  // literal text.
+  return stripHtml(html)
+    .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/g, (m, e: string) => HTML_ENTITIES[e] ?? m)
     .replace(/\s{3,}/g, "\n")
     .trim();
 }

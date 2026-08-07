@@ -81,6 +81,17 @@ function makeDocx(paragraphs: string[]): Uint8Array {
   });
 }
 
+/** A docx whose `word/document.xml` body is written verbatim — for payloads
+ *  `makeDocx`'s paragraph wrapper cannot express. */
+function rawDocx(bodyXml: string): Uint8Array {
+  return zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "word/document.xml": strToU8(
+      `<?xml version="1.0"?><w:document><w:body>${bodyXml}</w:body></w:document>`,
+    ),
+  });
+}
+
 async function docData(url: string): Promise<SamgovDocData> {
   const r = await samgovFetchDoc(url);
   expect(r.successful).toBe(true);
@@ -237,6 +248,36 @@ describe("samgovFetchDoc extraction", () => {
     expect(d.kind).toBe("docx");
     expect(d.text).toContain("Scope of Work\n");
     expect(d.text).toContain("Task 1 & scope: engineering");
+  });
+
+  it("keeps tab/break/paragraph layout and decodes entities once", async () => {
+    stubFetch({
+      body: rawDocx(
+        "<w:p><w:r><w:t>Line A</w:t><w:tab/><w:t>col2</w:t><w:br/><w:t>next</w:t></w:r></w:p>" +
+          "<w:p><w:r><w:t>R&amp;amp;D &amp;lt;redacted&amp;gt;</w:t></w:r></w:p>",
+      ),
+    });
+    const d = await docData(GOOD_URL);
+    expect(d.text).toContain("Line A\tcol2\nnext\n");
+    // One decode pass: `&amp;lt;` is the literal text `&lt;`, not a `<`.
+    expect(d.text).toContain("R&amp;D &lt;redacted&gt;");
+  });
+
+  it("a spliced tag payload leaves no markup in the extracted text", async () => {
+    // Attachment bytes are hostile input. Each `replace` pass leaves its
+    // neighbours adjacent, so a payload built to be joined by the pass that
+    // removes its middle walks out of a chain of passes as live markup.
+    stubFetch({
+      body: rawDocx(
+        "<w:p><w:r><w:t>Scope of Work</w:t></w:r></w:p>" +
+          "<w:<w:tab/>p><w:r><w:t>Task 1</w:t></w:r></w:p>" +
+          "<w:t<w:br/>>hidden</w:t>",
+      ),
+    });
+    const d = await docData(GOOD_URL);
+    expect(d.text).toContain("Scope of Work");
+    expect(d.text).toContain("Task 1");
+    expect(d.text).not.toMatch(/<[a-zA-Z/][^>]*>/);
   });
 
   it("refuses a zip that is not a docx (e.g. xlsx) with a teaching error", async () => {

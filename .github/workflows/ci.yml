@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege for every job below: this workflow only ever reads the repo.
+# Without an explicit block, jobs inherit the repository default, which can be
+# read/write on the whole token.
+permissions:
+  contents: read
+
 # The required merge gate: lint · typecheck · unit ·
 # integration (ephemeral PG17) · e2e (real box + MCP client) · scenarios ·
 # A scenario regression BLOCKS merge. NOTE: which of these are ENFORCED as merge

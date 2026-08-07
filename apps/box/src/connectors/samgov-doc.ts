@@ -307,6 +307,54 @@ async function ocrPdf(
   }
 }
 
+const DOCX_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  "#39": "'",
+};
+
+/**
+ * WordprocessingML → text, in ONE left-to-right scan.
+ *
+ * A chain of `replace` passes is not a strip: each pass can splice what is left
+ * of its neighbours into a NEW tag (`<w:` + `p>`), so the document chooses how
+ * many passes it survives. The scan drops everything from a `<` to its closing
+ * `>` exactly once — mapping the three tags that carry layout — and leaves a
+ * `<` with no `>` after it verbatim, because nothing can complete it. The
+ * result therefore holds no tag at all, whatever the nesting, and is unchanged
+ * if run again.
+ */
+function docxXmlToText(xml: string): string {
+  let out = "";
+  let i = 0;
+  while (i < xml.length) {
+    const lt = xml.indexOf("<", i);
+    if (lt < 0) {
+      out += xml.slice(i);
+      break;
+    }
+    out += xml.slice(i, lt);
+    const gt = xml.indexOf(">", lt + 1);
+    if (gt < 0) {
+      out += xml.slice(lt);
+      break;
+    }
+    const tag = xml.slice(lt, gt + 1);
+    out += /^<w:tab[^>]*\/>$/.test(tag)
+      ? "\t"
+      : /^<w:br[^>]*\/>$/.test(tag)
+        ? "\n"
+        : tag === "</w:p>"
+          ? "\n"
+          : "";
+    i = gt + 1;
+  }
+  return out;
+}
+
 function extractDocx(buf: Buffer, file_name: string | null): SamgovDocData {
   let files: Record<string, Uint8Array>;
   try {
@@ -325,20 +373,8 @@ function extractDocx(buf: Buffer, file_name: string | null): SamgovDocData {
         "is supported, and its document.xml must be under the size cap",
     );
   }
-  const ENTITIES: Record<string, string> = {
-    amp: "&",
-    lt: "<",
-    gt: ">",
-    quot: '"',
-    apos: "'",
-    "#39": "'",
-  };
-  const text = strFromU8(doc)
-    .replace(/<w:tab[^>]*\/>/g, "\t")
-    .replace(/<w:br[^>]*\/>/g, "\n")
-    .replace(/<\/w:p>/g, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&(amp|lt|gt|quot|apos|#39);/g, (_, e: string) => ENTITIES[e] ?? "")
+  const text = docxXmlToText(strFromU8(doc))
+    .replace(/&(amp|lt|gt|quot|apos|#39);/g, (m, e: string) => DOCX_ENTITIES[e] ?? m)
     .replace(/\n{3,}/g, "\n\n");
   return capText({ file_name, kind: "docx", text });
 }

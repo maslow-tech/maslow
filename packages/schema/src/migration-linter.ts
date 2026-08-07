@@ -1,4 +1,5 @@
 import type { Migration } from "./migrations/types.js";
+import { stripSqlComments } from "./sql-comments.js";
 
 /**
  * The migration linter — a merge-gate.
@@ -76,7 +77,7 @@ const STRUCTURAL_RULES: readonly Rule[] = [
 
 /** Split a SQL blob into statements, stripping line/block comments first. */
 function statements(sql: string): string[] {
-  const noComments = sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+  const noComments = stripSqlComments(sql);
   return noComments
     .split(";")
     .map((s) => s.trim())

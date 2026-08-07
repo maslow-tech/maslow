@@ -148,6 +148,37 @@ function looksLikeJwt(token: string): boolean {
   return token.split(".").length === 3;
 }
 
+/** JS `\s` is exactly the set `String#trim` strips, so this is the regex class. */
+function isSpace(ch: string): boolean {
+  return ch.trim() === "";
+}
+
+/**
+ * `Authorization: Bearer <token>` → the token, or null if the header is
+ * malformed. Hand-rolled rather than `/^Bearer\s+(.+)$/i` because that pattern
+ * backtracks polynomially on a long whitespace run (CodeQL js/polynomial-redos);
+ * every accept/reject decision below mirrors it exactly, including that `.`
+ * never matches a line terminator, so a token containing one stays malformed.
+ */
+export function parseBearerToken(header: string): string | null {
+  const h = header.trim();
+  if (h.slice(0, 6).toLowerCase() !== "bearer") return null;
+  let i = 6;
+  // the regex's `\s+`: at least one space, then all of them (greedy, and no
+  // shorter split can match, since anything it gives back is still whitespace).
+  if (i >= h.length || !isSpace(h[i]!)) return null;
+  while (i < h.length && isSpace(h[i]!)) i++;
+  const token = h.slice(i);
+  // `(.+)$` on a trimmed header: non-empty, and no line terminator inside.
+  if (token === "") return null;
+  for (let k = 0; k < token.length; k++) {
+    const c = token.charCodeAt(k);
+    // LF, CR, U+2028, U+2029 are the only characters `.` refuses.
+    if (c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029) return null;
+  }
+  return token;
+}
+
 /**
  * The one front-door validator. `Authorization: Bearer <token>` → context.
  * JWTs are verified locally (needs `jwt`); everything else is a static bearer.
@@ -160,9 +191,8 @@ export async function authenticate(
   if (!authorizationHeader) {
     throw new AuthError("missing Authorization header", 'Bearer realm="brain"');
   }
-  const m = /^Bearer\s+(.+)$/i.exec(authorizationHeader.trim());
-  if (!m) throw new AuthError("malformed Authorization header");
-  const token = m[1]!.trim();
+  const token = parseBearerToken(authorizationHeader);
+  if (token === null) throw new AuthError("malformed Authorization header");
   if (looksLikeJwt(token) && opts?.jwt) return validateJwt(token, opts.jwt);
   return validateStaticBearer(pool, token);
 }

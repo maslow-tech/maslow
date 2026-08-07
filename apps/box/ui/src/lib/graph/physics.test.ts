@@ -405,6 +405,40 @@ describe("PhysicsEngine — pinning", () => {
     for (const v of h.last().xy) expect(Number.isFinite(v)).toBe(true);
   });
 
+  it("never writes through a prototype key posted as a node index", () => {
+    // `index` is a `number` on the command type and a `postMessage` payload at
+    // runtime: `nodes["__proto__"]` is Array.prototype, which is not undefined,
+    // so an unguarded pin writes fx/fy/x/y/vx/vy onto every array's prototype.
+    const h = makeEngine();
+    loadRing(h, 5);
+    const probe = (o: object) =>
+      (o as { fx?: unknown; x?: unknown }).fx ?? (o as { x?: unknown }).x;
+
+    for (const key of ["__proto__", "constructor", "prototype", 1.5, -1]) {
+      const index = key as unknown as number;
+      h.engine.handle({ type: "pin", index, x: 13, y: 13, drag: true });
+      h.engine.handle({ type: "unpin", index });
+    }
+
+    expect(probe(Array.prototype)).toBeUndefined();
+    expect(probe(Object.prototype)).toBeUndefined();
+    expect(probe(Array)).toBeUndefined();
+    expect(probe({})).toBeUndefined();
+    expect(probe([])).toBeUndefined();
+    // No real node moved to the pin point either, and nothing held the alpha
+    // floor up: a bogus drag that never lands must not keep the clock alive.
+    expect(settle(h)).toBeGreaterThan(0);
+    expect(h.scheduler.running).toBe(false);
+    for (const v of h.last().xy) expect(v).not.toBe(13);
+
+    // A drag is tracked by the NODE's own index, so an index that arrives as a
+    // numeric string still releases the alpha floor on unpin.
+    h.engine.handle({ type: "pin", index: "2" as unknown as number, x: 5, y: 5, drag: true });
+    expect(h.scheduler.run(400)).toBe(400); // held warm by the drag
+    h.engine.handle({ type: "unpin", index: "2" as unknown as number });
+    expect(settle(h)).toBeGreaterThan(0);
+  });
+
   it("drops a drag pin whose index disappears in a data change", () => {
     const h = makeEngine();
     loadRing(h, 20);

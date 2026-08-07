@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from "@brain/shared";
 import { verifiedControl, type VerifiedControl } from "./verify.js";
 import type { ReleaseEntry } from "./versions.js";
 
@@ -57,7 +58,7 @@ export class BoothClient implements ReleaseFeed {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const res = await fetch(`${this.boothUrl.replace(/\/+$/, "")}${path}`, {
+      const res = await fetch(`${stripTrailingSlashes(this.boothUrl)}${path}`, {
         ...init,
         headers: {
           authorization: `Bearer ${this.brainToken}`,

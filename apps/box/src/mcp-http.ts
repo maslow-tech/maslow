@@ -3,7 +3,7 @@ import { logEvt } from "./log.js";
 import { recordBoxError } from "./errors.js";
 import { toBoxErrorReport } from "@brain/mcp-tools";
 import type { Pool } from "pg";
-import { isBrainError } from "@brain/shared";
+import { isBrainError, stripTrailingSlashes } from "@brain/shared";
 import {
   authenticate,
   AuthError,
@@ -114,7 +114,7 @@ export function mountMcp(app: Hono, opts: McpMountOptions): void {
       if (opts.publicUrl) {
         // Point clients at the discovery doc so claude.ai/Desktop starts the
         // OAuth flow (RFC 9728 / MCP auth). Uses the pinned canonical origin.
-        const resourceMeta = `${opts.publicUrl.replace(/\/+$/, "")}/.well-known/oauth-protected-resource`;
+        const resourceMeta = `${stripTrailingSlashes(opts.publicUrl)}/.well-known/oauth-protected-resource`;
         c.header("WWW-Authenticate", `${base}, resource_metadata="${resourceMeta}"`);
       } else {
         c.header("WWW-Authenticate", base);

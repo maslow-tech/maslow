@@ -420,8 +420,22 @@ export class PhysicsEngine {
 
   // -- pinning -------------------------------------------------------------
 
+  /**
+   * Dense-index lookup for a command off the wire. The `number` on
+   * `PhysicsCommand` is a compile-time claim about a `postMessage` payload and
+   * nothing more: `nodes["__proto__"]` resolves to `Array.prototype`, which is
+   * neither undefined nor a node, so every write in `pin` would land on the
+   * prototype of every array in the worker. The bounds check is a numeric
+   * conversion first, so no string ever reaches the subscript.
+   */
+  private nodeAt(index: number): SimNode | undefined {
+    const i = Number(index);
+    if (!Number.isInteger(i) || i < 0 || i >= this.nodes.length) return undefined;
+    return this.nodes[i];
+  }
+
   private pin(index: number, x: number, y: number, drag: boolean): void {
-    const node = this.nodes[index];
+    const node = this.nodeAt(index);
     if (node === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return;
     node.fx = x;
     node.fy = y;
@@ -432,21 +446,24 @@ export class PhysicsEngine {
     node.vx = 0;
     node.vy = 0;
     if (drag) {
-      this.dragging.add(index);
+      // The node's OWN index, so a `"3"` off the wire cannot leave an entry the
+      // matching unpin fails to delete — which would hold the alpha floor up
+      // forever and the simulation would never settle.
+      this.dragging.add(node.index);
       this.sim.alphaTarget(this.params.dragAlphaTarget);
     }
     this.startTicking();
   }
 
   private unpin(index: number): void {
-    const node = this.nodes[index];
+    const node = this.nodeAt(index);
     if (node !== undefined) {
       // d3 tests `fx == null`, so null releases and `undefined` would too —
       // null is used because `exactOptionalPropertyTypes` forbids the latter.
       node.fx = null;
       node.fy = null;
     }
-    if (this.dragging.delete(index) && this.dragging.size === 0) {
+    if (this.dragging.delete(node?.index ?? index) && this.dragging.size === 0) {
       // Pointer up: stop holding the floor and let it cool to rest.
       this.sim.alphaTarget(0);
     }

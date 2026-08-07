@@ -9,6 +9,8 @@
  * EXECUTE site can't quietly reintroduce an injection surface.
  */
 
+import { stripSqlComments } from "./sql-comments.js";
+
 export interface QuotingFinding {
   readonly rule: "no-percent-s" | "execute-must-use-format";
   readonly message: string;
@@ -27,7 +29,7 @@ export function lintQuoting(rawSql: string): QuotingFinding[] {
   const findings: QuotingFinding[] = [];
   // Strip comments first so a stray word like "execute" in prose can't be
   // mistaken for a dynamic EXECUTE statement.
-  const sql = rawSql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+  const sql = stripSqlComments(rawSql);
 
   // Rule A: no bare %s format specifier (%%s escaped-percent is fine).
   const percentS = /(^|[^%])%[0-9]*\$?s/g;

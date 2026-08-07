@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chunkBody } from "./chunker.js";
+import { chunkBody, splitSentences } from "./chunker.js";
 import { chunkObject } from "./embedder.js";
 
 const para = (words: number, tag: string): string =>
@@ -66,5 +66,64 @@ describe("chunkObject", () => {
   it("empty title and body produce nothing", () => {
     expect(chunkObject(null, null)).toEqual([]);
     expect(chunkObject(" ", "")).toEqual([]);
+  });
+});
+
+/**
+ * `splitSentences` replaced a polynomial-backtracking regex. CHUNKER_VERSION
+ * pins its output forever (a drift silently re-embeds the whole fleet), so it
+ * is asserted against the exact pattern it replaced — including the cases where
+ * that pattern dropped characters.
+ */
+const legacySplit = (paragraph: string): string[] =>
+  paragraph.match(/[^.!?\n]+[.!?]+[\s]*|[^.!?\n]+$/g) ?? [paragraph];
+
+describe("splitSentences — byte-identical to the regex it replaced", () => {
+  const cases = [
+    "",
+    " ",
+    "One sentence.",
+    "One. Two. Three.",
+    "One!! Two?? Three...",
+    "No terminator at all",
+    "Trailing spaces after the dot.   ",
+    "  leading space then text.",
+    ".leading terminator",
+    "!!!",
+    "...tail",
+    "a.b.c",
+    "Ends with a newline.\n",
+    "one\ntwo. three.", // a bare newline: the regex dropped "one\n"
+    "one\ntwo\nthree", // every run ends at a newline except the last
+    "\n\n\n",
+    "Sentence one.\nSentence two.",
+    "Sentence one. \n\t Sentence two.",
+    "unicode — em dash, ellipsis… then a stop.",
+    "tabs\tinside a sentence.",
+    "http://example.com/a.b path.",
+    para(50, "w"),
+    `${para(50, "w")}.`,
+    `${para(30, "a")}. ${para(30, "b")}!`,
+  ];
+
+  for (const s of cases) {
+    it(`matches on ${JSON.stringify(s.length > 40 ? s.slice(0, 40) + "…" : s)}`, () => {
+      expect(splitSentences(s)).toEqual(legacySplit(s));
+    });
+  }
+
+  it("falls back to the whole paragraph when nothing matched", () => {
+    expect(splitSentences("...")).toEqual(["..."]);
+    expect(splitSentences("")).toEqual([""]);
+  });
+
+  it("stays linear on a long terminator-free run (the ReDoS shape)", () => {
+    const s = "x".repeat(200_000);
+    expect(splitSentences(s)).toEqual([s]);
+  });
+
+  it("stays linear on a long run that ends at a newline (the no-match branch)", () => {
+    const s = `${"x".repeat(200_000)}\n`;
+    expect(splitSentences(s)).toEqual([s]);
   });
 });

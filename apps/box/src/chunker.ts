@@ -35,10 +35,52 @@ interface Chunk {
 
 const words = (s: string): number => (s.match(/\S+/g) ?? []).length;
 
-/** Sentence-ish split that never loses characters (keeps delimiters). */
-function splitSentences(paragraph: string): string[] {
-  const out = paragraph.match(/[^.!?\n]+[.!?]+[\s]*|[^.!?\n]+$/g);
-  return out ?? [paragraph];
+const isTerminator = (ch: string): boolean => ch === "." || ch === "!" || ch === "?";
+/** `[^.!?\n]` — the class both alternatives of the old pattern ran on. */
+const isUnitBreak = (ch: string): boolean => isTerminator(ch) || ch === "\n";
+/** JS `\s` is exactly the set `String#trim` strips. */
+const isSpace = (ch: string): boolean => ch.trim() === "";
+
+/**
+ * Sentence-ish split that keeps delimiters. A hand-rolled scan, not
+ * `/[^.!?\n]+[.!?]+[\s]*|[^.!?\n]+$/g`, whose `+`-before-anchor shape backtracks
+ * polynomially (CodeQL js/polynomial-redos) on the long delimiter-free runs this
+ * is called with (minified text, tables).
+ *
+ * Output is byte-identical to that pattern — CHUNKER_VERSION pins this
+ * function's behaviour forever, so it is reproduced exactly, including the two
+ * places the regex dropped text rather than emitting it: a run that ends at a
+ * bare `\n` matched neither alternative and was skipped, as was a leading
+ * `.`/`!`/`?`. Changing either is a CHUNKER_VERSION bump and a full re-embed,
+ * not a cleanup. Exported only so the unit test can pin it against the regex.
+ */
+export function splitSentences(paragraph: string): string[] {
+  const out: string[] = [];
+  const n = paragraph.length;
+  let i = 0;
+  while (i < n) {
+    if (isUnitBreak(paragraph[i]!)) {
+      i++; // neither alternative can start here
+      continue;
+    }
+    let j = i;
+    while (j < n && !isUnitBreak(paragraph[j]!)) j++;
+    if (j < n && isTerminator(paragraph[j]!)) {
+      // `[^.!?\n]+[.!?]+[\s]*`, both trailing runs greedy.
+      while (j < n && isTerminator(paragraph[j]!)) j++;
+      while (j < n && isSpace(paragraph[j]!)) j++;
+      out.push(paragraph.slice(i, j));
+      i = j;
+    } else if (j === n) {
+      out.push(paragraph.slice(i, n)); // `[^.!?\n]+$`
+      i = n;
+    } else {
+      // Run ends at a `\n`: no alternative matches at i, nor anywhere inside
+      // the run, so the regex scan resumed past the newline — and dropped it.
+      i = j + 1;
+    }
+  }
+  return out.length > 0 ? out : [paragraph];
 }
 
 /** Hard-split a run of text into ≤ TARGET_WORDS word windows. */

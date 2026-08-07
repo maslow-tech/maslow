@@ -125,6 +125,29 @@ describe("classifyPullFailure — a credential problem is not a poisoned release
     expect(isTransientPullFailure("Error response from daemon: manifest unknown")).toBe(false);
   });
 
+  it("keeps reading the bare `manifest for <ref> not found` wording as missing", () => {
+    // The `manifest for .* not found` alternative was dropped (polynomial
+    // backtracking); "not found" alone already covers every string it matched,
+    // including one with no other missing-ish wording anywhere in it.
+    for (const msg of [
+      "manifest for ghcr.io/maslowtech/bundle:v0.9.9 not found",
+      "Error response from daemon: manifest for ghcr.io/x/box:v1 not found",
+      "no such manifest: ghcr.io/x/box@sha256:deadbeef",
+    ]) {
+      expect(classifyPullFailure(msg)).toBe("missing");
+      expect(isTransientPullFailure(msg)).toBe(false);
+    }
+  });
+
+  it("auth still wins over missing on the ambiguous docker wording", () => {
+    // The one message that names both; reading it as "missing" would silently
+    // apply a release's app half and drop its infra half.
+    const msg =
+      "pull access denied for ghcr.io/x/bundle, repository does not exist or may require 'docker login'";
+    expect(classifyPullFailure(msg)).toBe("auth");
+    expect(isTransientPullFailure(msg)).toBe(true);
+  });
+
   it("leaves an unrecognised failure DEFINITIVE — latch loudly beats loop silently", () => {
     // Deliberate: an unnameable failure may be a hostile payload or a bug here,
     // and those must not retry forever unseen.

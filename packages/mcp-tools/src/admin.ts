@@ -5,6 +5,34 @@ import { mapWriteError, type Scope } from "./write-path.js";
 /** The three standard permission tiers (migration 0015); scopes are derived. */
 export type Permission = "owner" | "member" | "viewer";
 
+/**
+ * `/home/<slug>` base from a display name — migration 0037's slug rules, kept
+ * char-by-char rather than as `replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"")
+ * .slice(0,63).replace(/-+$/g,"")`, whose anchored `-+$` backtracks
+ * polynomially on a long run of separators (CodeQL js/polynomial-redos) and the
+ * name is caller-supplied. Same output for every input: non-alphanumeric runs
+ * collapse to one `-`, leading/trailing `-` are dropped, and the 63-char cut is
+ * re-trimmed. Exported for the unit test.
+ */
+export function slugifyHomeName(name: string): string {
+  const lower = name.toLowerCase();
+  let slug = "";
+  let pendingDash = false;
+  for (let i = 0; i < lower.length; i++) {
+    const ch = lower[i]!;
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      if (pendingDash && slug !== "") slug += "-";
+      pendingDash = false;
+      slug += ch;
+    } else {
+      pendingDash = true; // a leading/trailing run is simply never emitted
+    }
+  }
+  let cut = slug.slice(0, 63);
+  while (cut.endsWith("-")) cut = cut.slice(0, -1);
+  return cut;
+}
+
 export interface AdminOptions {
   /**
    * Fired AFTER a revoke commits, with the revoked account id — mirrors
@@ -112,12 +140,7 @@ export class Admin {
     );
     if (!t.rows[0]?.ok) return;
     const reserved = new Set(["user", "shared", "home", "tmp", "bin", "usr", "etc", "root"]);
-    let base = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 63)
-      .replace(/-+$/g, "");
+    let base = slugifyHomeName(name);
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(base) || reserved.has(base)) {
       base = `user-${accountId.slice(0, 8)}`;
     }

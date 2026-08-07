@@ -99,7 +99,11 @@ const AUTH_RE =
   /\b(denied|unauthorized|authentication required|forbidden|access to the requested resource is not authorized|401|403)\b|requires ['"]?docker login|authorization failed/i;
 const TRANSPORT_RE =
   /\b(timeout|timed out|connection refused|connection reset|reset by peer|network is unreachable|no route to host|no such host|temporary failure in name resolution|dial tcp|i\/o timeout|EOF|TLS handshake|certificate|context deadline exceeded|too many requests|429|500|502|503|504|server error|service unavailable|internal server error|registry is unavailable|cannot connect to the docker daemon|is the docker daemon running)\b/i;
-const MISSING_RE = /manifest unknown|manifest for .* not found|not found|no such manifest/i;
+// No `manifest for .* not found` alternative: `.*` before a literal backtracks
+// polynomially (CodeQL js/polynomial-redos), and it was already subsumed — every
+// string it matched contains "not found", which is an alternative in its own
+// right, so this tests identically.
+const MISSING_RE = /manifest unknown|not found|no such manifest/i;
 
 export function classifyPullFailure(message: string): PullFailureKind {
   if (AUTH_RE.test(message)) return "auth";

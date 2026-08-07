@@ -10,7 +10,7 @@ import {
   type AuthedContext,
   type Scope,
 } from "@brain/mcp-tools";
-import { uiPage } from "@brain/shared";
+import { stripTrailingSlashes, uiPage } from "@brain/shared";
 
 /**
  * The box's OAuth 2.1 authorization server (per the MCP auth spec).
@@ -100,7 +100,7 @@ export interface OAuthOptions {
 
 /** The public origin for this request: configured value wins, else derive from Host. */
 function originOf(c: Context, configured?: string): string {
-  if (configured) return configured.replace(/\/+$/, "");
+  if (configured) return stripTrailingSlashes(configured);
   const proto = c.req.header("x-forwarded-proto") ?? "https";
   const host = c.req.header("host") ?? "localhost";
   return `${proto}://${host}`;
@@ -108,7 +108,7 @@ function originOf(c: Context, configured?: string): string {
 
 /** The resource identifier the issued token is bound to (RFC 8707): <origin>/mcp. */
 export function mcpAudience(origin: string): string {
-  return `${origin.replace(/\/+$/, "")}/mcp`;
+  return `${stripTrailingSlashes(origin)}/mcp`;
 }
 
 function b64urlSha256(input: string): string {

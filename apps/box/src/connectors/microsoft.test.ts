@@ -59,6 +59,20 @@ function stubFetch(script: (url: string, init?: RequestInit) => StubResponse): R
 
 afterEach(() => vi.unstubAllGlobals());
 
+/**
+ * Host EQUALITY, not `url.includes("graph.microsoft.com")`: a look-alike
+ * (`graph.microsoft.com.evil.test`, `evil.test/?graph.microsoft.com`) contains
+ * that substring, so a stub routing on it would answer AS Graph and hide
+ * exactly the redirect-target bug these tests exist to catch.
+ */
+function isGraphUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname === "graph.microsoft.com";
+  } catch {
+    return false;
+  }
+}
+
 const CREDS = { clientId: "app-id", clientSecret: "csecret", tenantId: "tenant-123" };
 
 describe("microsoftAuthorizeUrl", () => {
@@ -217,7 +231,7 @@ describe("microsoftApi raw proxy (stubbed fetch)", () => {
 
   it("follows a GET 302 (file /content download) WITHOUT the bearer token", async () => {
     const calls = stubFetch((url) =>
-      url.includes("graph.microsoft.com")
+      isGraphUrl(url)
         ? { status: 302, text: "", location: "https://tenant.sharepoint.com/presigned" }
         : { status: 200, text: "meeting notes", contentType: "text/plain" },
     );
@@ -229,6 +243,22 @@ describe("microsoftApi raw proxy (stubbed fetch)", () => {
     expect(calls[0]!.auth).toBe("Bearer tok");
     expect(calls[1]!.url).toBe("https://tenant.sharepoint.com/presigned");
     expect(calls[1]!.auth).toBeNull(); // the pre-signed URL never sees the token
+  });
+
+  it("carries no token to a Graph LOOK-ALIKE redirect host", async () => {
+    // The hop is followed (any https Location is), but the token is stripped —
+    // and the stub answers this host as NOT Graph, which a substring check on
+    // "graph.microsoft.com" would get wrong.
+    const evil = "https://graph.microsoft.com.evil.test/x";
+    expect(isGraphUrl(evil)).toBe(false);
+    const calls = stubFetch((url) =>
+      isGraphUrl(url)
+        ? { status: 302, text: "", location: evil }
+        : { status: 200, text: "stolen?", contentType: "text/plain" },
+    );
+    await microsoftApi("secret-token", { path: "/v1.0/me/drive/root:/notes.txt:/content" });
+    expect(calls[1]!.url).toBe(evil);
+    expect(calls[1]!.auth).toBeNull();
   });
 
   it("a redirect without an https Location (or on a non-GET) fails, not follows", async () => {
