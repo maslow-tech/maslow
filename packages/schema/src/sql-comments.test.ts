@@ -46,8 +46,16 @@ describe("stripSqlComments", () => {
   });
 
   it("stays linear on many unterminated openers (the ReDoS shape)", () => {
-    const sql = "/* x ".repeat(100_000); // no closer anywhere
-    expect(stripSqlComments(sql)).toBe(sql);
-    expect(stripSqlComments(sql)).toBe(legacy(sql));
+    // The input that made the old lazy regex quadratic. Only the replacement
+    // runs on it: `legacy` would spend the very time this test exists to
+    // prove is gone, so the equivalence on this shape is checked at a size
+    // the old pattern can still handle.
+    const huge = "/* x ".repeat(100_000); // no closer anywhere
+    const started = performance.now();
+    expect(stripSqlComments(huge)).toBe(huge);
+    expect(performance.now() - started).toBeLessThan(1_000);
+
+    const modest = "/* x ".repeat(500);
+    expect(stripSqlComments(modest)).toBe(legacy(modest));
   });
 });
